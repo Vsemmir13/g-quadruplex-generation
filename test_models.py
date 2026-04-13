@@ -59,7 +59,7 @@ def main():
     trainer = pl.Trainer(
         accelerator=accelerator,
         devices=1,
-        fast_dev_run=True,  # 1 train + 1 val + 1 test batch
+        fast_dev_run=True,
         enable_checkpointing=False,
         logger=False,
         enable_progress_bar=True,

@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 VOCAB = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 VOCAB_SIZE = len(VOCAB)
 ID2BASE = {v: k for k, v in VOCAB.items()}
-BOS_TOKEN_ID = VOCAB_SIZE  # used for autoregressive LSTM input
+BOS_TOKEN_ID = VOCAB_SIZE
 
 def load_data(file_path_quadruplex):
     cols = ["chrom", "start", "end", "level_raw", "score", "strand"]
@@ -73,7 +73,7 @@ class QuadDataset(Dataset):
             x = torch.cat([bos, encoded_seq[:-1]], dim=0)
             y = encoded_seq
         level = self.levels[idx]
-        level_norm = (level - 1.0) / 3.0
+        level_norm = (level - 4.0) / 2.0
         return x, y, torch.tensor([level_norm], dtype=torch.float32)
 
 def decode_seq(ids):

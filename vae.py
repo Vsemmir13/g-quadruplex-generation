@@ -28,13 +28,12 @@ class DNAConvVAE(LightningModule):
             nn.Linear(hidden_dim, hidden_dim),
         )
 
-        # Keep positional information (no global pooling). Downsample length by 4.
         self.encoder = nn.Sequential(
             nn.Conv1d(vocab_size, hidden_dim // 2, kernel_size=7, padding=3),
             nn.ReLU(),
-            nn.Conv1d(hidden_dim // 2, hidden_dim // 2, kernel_size=4, stride=2, padding=1),  # /2
+            nn.Conv1d(hidden_dim // 2, hidden_dim // 2, kernel_size=4, stride=2, padding=1),
             nn.ReLU(),
-            nn.Conv1d(hidden_dim // 2, hidden_dim, kernel_size=4, stride=2, padding=1),  # /4
+            nn.Conv1d(hidden_dim // 2, hidden_dim, kernel_size=4, stride=2, padding=1),
             nn.ReLU(),
         )
 
@@ -43,9 +42,9 @@ class DNAConvVAE(LightningModule):
 
         self.decoder_in = nn.Conv1d(latent_dim, hidden_dim, kernel_size=1)
         self.decoder = nn.Sequential(
-            nn.ConvTranspose1d(hidden_dim, hidden_dim // 2, kernel_size=4, stride=2, padding=1),  # x2
+            nn.ConvTranspose1d(hidden_dim, hidden_dim // 2, kernel_size=4, stride=2, padding=1),
             nn.ReLU(),
-            nn.ConvTranspose1d(hidden_dim // 2, hidden_dim // 4, kernel_size=4, stride=2, padding=1),  # x2
+            nn.ConvTranspose1d(hidden_dim // 2, hidden_dim // 4, kernel_size=4, stride=2, padding=1),
             nn.ReLU(),
             nn.Conv1d(hidden_dim // 4, vocab_size, kernel_size=3, padding=1),
         )
@@ -59,13 +58,13 @@ class DNAConvVAE(LightningModule):
         return F.one_hot(x, num_classes=self.vocab_size).float()
 
     def encode(self, x, cond):
-        x = self.one_hot(x)                # (B, T, 4)
-        x = x.permute(0, 2, 1)            # (B, 4, T)
-        h = self.encoder(x)               # (B, H, T/4)
-        cond_emb = self.cond_emb(cond)    # (B, H)
-        h = h + cond_emb[:, :, None]      # condition via FiLM-like bias
-        mu = self.to_mu(h)                # (B, Z, T/4)
-        logvar = self.to_logvar(h)        # (B, Z, T/4)
+        x = self.one_hot(x)
+        x = x.permute(0, 2, 1)
+        h = self.encoder(x)
+        cond_emb = self.cond_emb(cond)
+        h = h + cond_emb[:, :, None]
+        mu = self.to_mu(h)
+        logvar = self.to_logvar(h)
         return mu, logvar
 
     def reparameterize(self, mu, logvar):
@@ -74,15 +73,13 @@ class DNAConvVAE(LightningModule):
         return mu + eps * std
 
     def decode(self, z, cond):
-        # z: (B, Z, T/4)
-        h = self.decoder_in(z)  # (B, H, T/4)
-        cond_emb = self.cond_emb(cond)  # (B, H)
+        h = self.decoder_in(z)
+        cond_emb = self.cond_emb(cond)
         h = h + cond_emb[:, :, None]
-        logits = self.decoder(h)  # (B, 4, T)
-        logits = logits.permute(0, 2, 1)  # (B, T, 4)
+        logits = self.decoder(h)
+        logits = logits.permute(0, 2, 1)
         return logits[:, : self.seq_len, :]
 
-    # ---------- FORWARD ----------
     def forward(self, x, cond):
         mu, logvar = self.encode(x, cond)
         z = self.reparameterize(mu, logvar)
@@ -104,41 +101,31 @@ class DNAConvVAE(LightningModule):
 
         return recon + beta_eff * kld, recon, kld
 
-    # ---------- TRAIN ----------
     def training_step(self, batch, batch_idx):
         x, y, cond = batch
         logits, mu, logvar = self(x, cond)
-
         loss, recon, kld = self.loss_fn(logits, y, mu, logvar)
-
         self.log_dict({
             "train_loss": loss,
             "train_recon": recon,
             "train_kld": kld
         }, prog_bar=True)
-
         return loss
 
-    # ---------- VALID ----------
     def validation_step(self, batch, batch_idx):
         x, y, cond = batch
         logits, mu, logvar = self(x, cond)
-
         loss, recon, kld = self.loss_fn(logits, y, mu, logvar)
-
         self.log_dict({
             "val_loss": loss,
             "val_recon": recon,
             "val_kld": kld
         }, prog_bar=True)
 
-    # ---------- TEST ----------
     def test_step(self, batch, batch_idx):
         x, y, cond = batch
         logits, mu, logvar = self(x, cond)
-
         loss, _, _ = self.loss_fn(logits, y, mu, logvar)
-
         self.test_losses.append(loss.detach())
         self.log("test_loss", loss)
 
@@ -161,7 +148,6 @@ class DNAConvVAE(LightningModule):
             "logvar": logvar.detach().cpu(),
         }
 
-    # ---------- GENERATION ----------
     def generate(self, cond, z=None):
         if z is None:
             z = torch.randn(
@@ -171,19 +157,14 @@ class DNAConvVAE(LightningModule):
                 device=cond.device,
             )
         elif z.dim() == 2:
-            # Allow passing [B, Z] and broadcast across positions
             z = z[:, :, None].expand(-1, -1, self.seq_len // 4)
-
         logits = self.decode(z, cond)
         return torch.argmax(logits, dim=-1)
 
-    # ---------- OPTIM ----------
     def configure_optimizers(self):
         opt = torch.optim.Adam(self.parameters(), lr=self.lr)
-
         sched = {
             "scheduler": ReduceLROnPlateau(opt, mode="min", patience=5),
             "monitor": "val_loss",
         }
-
         return [opt], [sched]

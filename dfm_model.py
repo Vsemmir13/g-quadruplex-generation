@@ -15,16 +15,6 @@ class Dense(nn.Module):
 
 
 class QuadCondCNN(nn.Module):
-    """
-    CNN used for discrete Dirichlet flow matching on DNA sequences.
-
-    Inputs:
-      - xt: [B, L, K] or expanded simplex [B, L, 2K]
-      - t:  [B] alpha/time
-      - cond: [B, cond_dim] (e.g. normalized level)
-    Output:
-      - logits: [B, L, K]
-    """
 
     def __init__(
         self,
