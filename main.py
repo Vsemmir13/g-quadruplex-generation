@@ -8,6 +8,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.strategies import DDPStrategy
 from data_utils import QuadDataset, load_data, save_examples
 from dfm_module import QuadDFMModule
+from gen_metrics_callback import FBDEmbedderCfg, GenerativeMetricsCallback
 from lstm import QuadLSTM
 from vae import DNAConvVAE
 from torch.utils.data import DataLoader
@@ -30,12 +31,15 @@ def main():
     parser.add_argument("--limit_train_batches", type=float, default=1.0)
     parser.add_argument("--limit_val_batches", type=float, default=1.0)
     parser.add_argument("--test", action="store_true", help="Run test after training")
-    parser.add_argument("--model_type", type=str, default='lstm', choices=['lstm', 'vae', 'dfm'])
+    parser.add_argument("--model_type", type=str, default='lstm', choices=['lstm', 'vae', 'dfm', 'dfm_transformer'])
 
     # DFM hyperparameters
     parser.add_argument("--seq_len", type=int, default=512)
     parser.add_argument("--hidden_dim", type=int, default=256)
     parser.add_argument("--num_cnn_stacks", type=int, default=2)
+    parser.add_argument("--num_transformer_layers", type=int, default=6)
+    parser.add_argument("--num_attention_heads", type=int, default=8)
+    parser.add_argument("--transformer_ff_mult", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--alpha_max", type=float, default=12.0)
@@ -44,6 +48,16 @@ def main():
     parser.add_argument("--prior_pseudocount", type=float, default=2.0)
     parser.add_argument("--num_integration_steps", type=int, default=64)
     parser.add_argument("--flow_temp", type=float, default=1.0)
+
+    # Validation metrics (logged to TensorBoard)
+    parser.add_argument("--val_metrics_sample_size", type=int, default=256)
+    parser.add_argument("--melanoma_clean_cls_ckpt", type=str, default=None)
+    parser.add_argument("--flybrain_clean_cls_ckpt", type=str, default=None)
+    parser.add_argument("--fbd_hidden_dim", type=int, default=128)
+    parser.add_argument("--fbd_num_cnn_stacks", type=int, default=4)
+    parser.add_argument("--fbd_p_dropout", type=float, default=0.2)
+    parser.add_argument("--fbd_num_classes", type=int, default=47)
+    parser.add_argument("--g4hunter_window", type=int, default=25)
     args = parser.parse_args()
 
     logging.info("Loading data...")
@@ -55,8 +69,13 @@ def main():
     train_size = int(len(df) * args.ratio)
     val_size = int(len(df) * args.val_ratio)
     test_size = len(df) - train_size - val_size
-    train_df, remaining_df = train_test_split(df, test_size=1 - args.ratio, stratify=df['level'])
-    val_df, test_df = train_test_split(remaining_df, test_size=args.val_ratio / (1 - args.ratio), stratify=remaining_df['level'])
+    train_df, remaining_df = train_test_split(df, test_size=1 - args.ratio, stratify=df['level'], random_state=42)
+    test_df, val_df = train_test_split(
+        remaining_df,
+        test_size=args.val_ratio / (1 - args.ratio),
+        stratify=remaining_df['level'],
+        random_state=42,
+    )
     logging.info(f"Train size: {train_size}, Val size: {val_size}, Test size: {test_size}")
 
     logging.info("Creating datasets and dataloaders...")
@@ -78,13 +97,17 @@ def main():
         model = QuadLSTM(vocab_size=5)
     elif args.model_type == 'vae':
         model = DNAConvVAE(seq_len=args.seq_len)
-    elif args.model_type == 'dfm':
+    elif args.model_type in {'dfm', 'dfm_transformer'}:
         model = QuadDFMModule(
+            backbone="cnn" if args.model_type == "dfm" else "transformer",
             seq_len=args.seq_len,
             vocab_size=4,
             cond_dim=1,
             hidden_dim=args.hidden_dim,
             num_cnn_stacks=args.num_cnn_stacks,
+            num_transformer_layers=args.num_transformer_layers,
+            num_attention_heads=args.num_attention_heads,
+            transformer_ff_mult=args.transformer_ff_mult,
             dropout=args.dropout,
             lr=args.lr,
             alpha_max=args.alpha_max,
@@ -109,6 +132,33 @@ def main():
         patience=5,
         verbose=True,
         mode="min"
+    )
+
+    mel_cfg = None
+    fb_cfg = None
+    if args.melanoma_clean_cls_ckpt:
+        mel_cfg = FBDEmbedderCfg(
+            checkpoint_path=args.melanoma_clean_cls_ckpt,
+            hidden_dim=args.fbd_hidden_dim,
+            num_cnn_stacks=args.fbd_num_cnn_stacks,
+            p_dropout=args.fbd_p_dropout,
+            num_classes=args.fbd_num_classes,
+        )
+    if args.flybrain_clean_cls_ckpt:
+        fb_cfg = FBDEmbedderCfg(
+            checkpoint_path=args.flybrain_clean_cls_ckpt,
+            hidden_dim=args.fbd_hidden_dim,
+            num_cnn_stacks=args.fbd_num_cnn_stacks,
+            p_dropout=args.fbd_p_dropout,
+            num_classes=args.fbd_num_classes,
+        )
+    metrics_cb = GenerativeMetricsCallback(
+        train_sequences=train_dataset.encoded_seqs,
+        seq_len=args.seq_len,
+        sample_size=args.val_metrics_sample_size,
+        mel_embedder=mel_cfg,
+        fb_embedder=fb_cfg,
+        g4hunter_window=args.g4hunter_window,
     )
 
     devices = 1
@@ -138,8 +188,8 @@ def main():
         limit_train_batches=args.limit_train_batches,
         limit_val_batches=args.limit_val_batches,
         enable_progress_bar=True,
-        callbacks=[checkpoint_callback, early_stopping],
-        logger=TensorBoardLogger(f"logs/{args.model_type}/{args.experiment_name}", name=f"quad_{args.model_type}_experiment")
+        callbacks=[checkpoint_callback, early_stopping, metrics_cb],
+        logger=TensorBoardLogger(f"logs/{args.model_type}/", name=f"{args.experiment_name}")
     )
 
     logging.info("Starting training...")
@@ -152,7 +202,7 @@ def main():
     
     logging.info("Save examples of eval...")
     predictions = trainer.predict(model, dataloaders=test_loader)
-    save_examples(predictions, output_path=f"quad_{args.model_type}_examples.jsonl", max_examples=30)
+    save_examples(predictions, output_path=f"examples/{args.model_type}/{args.experiment_name}.jsonl", max_examples=30, compact=True)
 
     logging.info("Finish!")
 

@@ -80,7 +80,7 @@ def decode_seq(ids):
     # For non-ACGT tokens (e.g. BOS), fall back to 'N'.
     return "".join(ID2BASE.get(int(i), "N") for i in ids)
 
-def save_examples(predictions, output_path="vae_examples.jsonl", max_examples=20):
+def save_examples(predictions, output_path="vae_examples.jsonl", max_examples=20, *, compact: bool = False):
     saved = 0
     with open(output_path, "w", encoding="utf-8") as f:
         for batch_out in predictions:
@@ -90,16 +90,23 @@ def save_examples(predictions, output_path="vae_examples.jsonl", max_examples=20
             gen = batch_out["gen"]
             batch_size = x.size(0)
             for i in range(batch_size):
-                row = {
-                    "id": saved,
-                    "cond": cond[i].tolist(),
-                    "test_x": x[i].tolist(),
-                    "reconstruction": recon[i].tolist(),
-                    "generation": gen[i].tolist(),
-                    "test_x_seq": decode_seq(x[i].tolist()),
-                    "reconstruction_seq": decode_seq(recon[i].tolist()),
-                    "generation_seq": decode_seq(gen[i].tolist()),
-                }
+                if compact:
+                    row = {
+                        "id": saved,
+                        "cond": float(cond[i].view(-1)[0].item()),
+                        "generation_seq": decode_seq(gen[i].tolist()),
+                    }
+                else:
+                    row = {
+                        "id": saved,
+                        "cond": cond[i].tolist(),
+                        "test_x": x[i].tolist(),
+                        "reconstruction": recon[i].tolist(),
+                        "generation": gen[i].tolist(),
+                        "test_x_seq": decode_seq(x[i].tolist()),
+                        "reconstruction_seq": decode_seq(recon[i].tolist()),
+                        "generation_seq": decode_seq(gen[i].tolist()),
+                    }
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
                 saved += 1
                 if saved >= max_examples:

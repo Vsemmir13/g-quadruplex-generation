@@ -37,6 +37,19 @@ class QuadLSTM(LightningModule):
         logits = self.fc_out(out)
         return logits
 
+    @torch.no_grad()
+    def generate(self, levels: torch.Tensor, seq_len: int) -> torch.Tensor:
+        device = levels.device
+        bsz = levels.size(0)
+        bos = torch.full((bsz, 1), 4, dtype=torch.long, device=device)
+        x = bos
+        for _ in range(int(seq_len)):
+            logits = self(x, levels)[:, -1, :4]
+            probs = torch.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            x = torch.cat([x, next_token], dim=1)
+        return x[:, 1:]
+
     def training_step(self, batch, batch_idx):
         x, y, levels = batch
         logits = self(x, levels)

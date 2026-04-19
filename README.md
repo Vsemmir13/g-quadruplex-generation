@@ -21,7 +21,7 @@ Index Terms—discrete models, flow matching, generative models, DNA sequences, 
 ## What is implemented here
 
 - Main model — Discrete Dirichlet Flow Matching (DFM): `quadruplex/dfm_module.py`, `quadruplex/dfm_model.py`, `quadruplex/dfm_flow_utils.py`  
-Conditional flow‑matching model on the simplex using a Dirichlet probability path.
+Conditional flow‑matching model on the simplex using a Dirichlet probability path. Two backbones are supported: residual CNN (`dfm`) and a stronger Transformer variant (`dfm_transformer`).
 - Baseline — LSTM (autoregressive LM): `quadruplex/lstm.py`  
 Next‑token prediction conditioned on `level_norm`.
 - Baseline — VAE (conditional CNN, positional latent): `quadruplex/vae.py`  
@@ -41,9 +41,9 @@ Dataset code: `quadruplex/data_utils.py` (`QuadDataset`).
 
 ## Quick start
 
-### Dry-run testing (verify all 3 models run)
+### Dry-run testing (verify all 4 models run)
 
-Runs `fast_dev_run=True` (1 train batch + 1 val batch) for LSTM/VAE/DFM:
+Runs `fast_dev_run=True` (1 train batch + 1 val batch) for LSTM/VAE/DFM-CNN/DFM-Transformer:
 
 ```bash
 python quadruplex/test_models.py \
@@ -90,6 +90,21 @@ python quadruplex/main.py --model_type dfm \
   --alpha_max 12 --alpha_scale 15 --num_integration_steps 64
 ```
 
+DFM Transformer (stronger backbone):
+
+```bash
+python quadruplex/main.py --model_type dfm_transformer \
+  --experiment_name training_dfm_transformer \
+  --file_path_quadruplex quadruplex/data/EQ_hg38_lifted.bed \
+  --file_path_seq quadruplex/data/hg38.fa \
+  --epochs 1 --batch_size 64 \
+  --hidden_dim 256 \
+  --num_transformer_layers 6 \
+  --num_attention_heads 8 \
+  --transformer_ff_mult 4 \
+  --alpha_max 12 --alpha_scale 15 --num_integration_steps 64
+```
+
 After `test`, examples are saved to JSONL: `quad_<model>_examples.jsonl`.
 
 ---
@@ -121,7 +136,7 @@ python quadruplex/main.py --model_type vae \
 The utility loads a trained checkpoint, builds the same test split logic as in `main.py`, generates sequences, and reports metrics.
 
 ```bash
-python quadruplex/vetrics.py \
+python quadruplex/metrics.py \
   --model_type dfm \
   --checkpoint checkpoints/dfm/training_dfm/last.ckpt
 ```
@@ -129,9 +144,9 @@ python quadruplex/vetrics.py \
 
 ## Metrics tables
 
-| Model           | Train loss | Val loss | Test loss | Perplexity | G4Bert ↓ | G4Bert PLL ↑ | G4Hunter | Notes |
-| --------------- | ---------- | -------- | --------- | -------------------------- | ------------ | ------------ | ----- |
-| LSTM            |            |          |           |                            |              |              |       |
-| VAE             |            |          |           |                            |              |              |       |
-| DFM (Dirichlet) |            |          |           |                            |              |              |       |
+| Model           | Train loss | Val loss | Test loss |     Perplexity      |    G4Bert ↓  | G4Bert PLL ↑ | G4Hunter | Notes |
+| --------------- | ---------- | -------- | --------- | --------------------| ------------ | ------------ | -----    | ----- |
+| LSTM            |            |          |           |                     |              |              |          |       |
+| VAE             |            |          |           |                     |              |              |          |       |
+| DFM (Dirichlet) |            |          |           |                     |              |              |          |       | 
 

@@ -86,52 +86,59 @@ class DNAConvVAE(LightningModule):
         logits = self.decode(z, cond)
         return logits, mu, logvar
 
-    # ---------- LOSS ----------
     def loss_fn(self, logits, targets, mu, logvar):
         recon = F.cross_entropy(
             logits.reshape(-1, self.vocab_size),
             targets.reshape(-1)
         )
-
-        # KL per position/channel, then mean over batch/space
         kld = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).mean()
-
         warm = min(1.0, float(self.global_step) / float(self.beta_warmup_steps)) if self.beta_warmup_steps else 1.0
         beta_eff = self.beta * warm
-
         return recon + beta_eff * kld, recon, kld
 
     def training_step(self, batch, batch_idx):
         x, y, cond = batch
         logits, mu, logvar = self(x, cond)
         loss, recon, kld = self.loss_fn(logits, y, mu, logvar)
-        self.log_dict({
-            "train_loss": loss,
-            "train_recon": recon,
-            "train_kld": kld
-        }, prog_bar=True)
+        self.log_dict(
+            {
+                "train_loss": loss,
+                "train_recon": recon,
+                "train_kld": kld,
+            },
+            prog_bar=True,
+            on_step=True,
+            on_epoch=True,
+            logger=True,
+        )
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y, cond = batch
         logits, mu, logvar = self(x, cond)
         loss, recon, kld = self.loss_fn(logits, y, mu, logvar)
-        self.log_dict({
-            "val_loss": loss,
-            "val_recon": recon,
-            "val_kld": kld
-        }, prog_bar=True)
+        self.log_dict(
+            {
+                "val_loss": loss,
+                "val_recon": recon,
+                "val_kld": kld,
+            },
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+            logger=True,
+        )
 
     def test_step(self, batch, batch_idx):
         x, y, cond = batch
         logits, mu, logvar = self(x, cond)
         loss, _, _ = self.loss_fn(logits, y, mu, logvar)
         self.test_losses.append(loss.detach())
-        self.log("test_loss", loss)
+        self.log("test_loss", loss, on_step=False, on_epoch=True, logger=True)
 
     def on_test_epoch_end(self):
         avg = torch.stack(self.test_losses).mean()
-        self.log("avg_test_loss", avg)
+        self.log("avg_test_loss", avg, logger=True)
         self.test_losses.clear()
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):

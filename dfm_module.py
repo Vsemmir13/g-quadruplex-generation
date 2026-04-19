@@ -8,18 +8,22 @@ from dfm_flow_utils import (
     sample_cond_prob_path,
     simplex_proj,
 )
-from dfm_model import QuadCondCNN
+from dfm_model import QuadCondCNN, QuadCondTransformer
 
 
 class QuadDFMModule(LightningModule):
     def __init__(
         self,
         *,
+        backbone: str = "cnn",
         seq_len: int = 512,
         vocab_size: int = 4,
         cond_dim: int = 1,
         hidden_dim: int = 256,
         num_cnn_stacks: int = 2,
+        num_transformer_layers: int = 6,
+        num_attention_heads: int = 8,
+        transformer_ff_mult: int = 4,
         dropout: float = 0.1,
         lr: float = 1e-3,
         alpha_max: float = 12.0,
@@ -31,27 +35,54 @@ class QuadDFMModule(LightningModule):
     ):
         super().__init__()
         self.save_hyperparameters()
-        self.model = QuadCondCNN(
-            alphabet_size=vocab_size,
-            cond_dim=cond_dim,
-            hidden_dim=hidden_dim,
-            num_cnn_stacks=num_cnn_stacks,
-            dropout=dropout,
-            expanded_simplex=True,
-        )
+        if backbone == "cnn":
+            self.model = QuadCondCNN(
+                alphabet_size=vocab_size,
+                cond_dim=cond_dim,
+                hidden_dim=hidden_dim,
+                num_cnn_stacks=num_cnn_stacks,
+                dropout=dropout,
+                expanded_simplex=True,
+            )
+        elif backbone == "transformer":
+            self.model = QuadCondTransformer(
+                seq_len=seq_len,
+                alphabet_size=vocab_size,
+                cond_dim=cond_dim,
+                hidden_dim=hidden_dim,
+                num_layers=num_transformer_layers,
+                num_heads=num_attention_heads,
+                ff_mult=transformer_ff_mult,
+                dropout=dropout,
+                expanded_simplex=True,
+            )
+        else:
+            raise ValueError(f"Unsupported DFM backbone: {backbone}")
         self.condflow = DirichletConditionalFlow(k=vocab_size, alpha_max=alpha_max, alpha_spacing=0.001)
         self.test_losses: list[torch.Tensor] = []
 
     def training_step(self, batch, batch_idx):
         x, _, cond = batch
         loss, recon = self._step_loss(x, cond)
-        self.log_dict({"train_loss": loss, "train_recon": recon}, prog_bar=True)
+        self.log_dict(
+            {"train_loss": loss, "train_recon": recon},
+            prog_bar=True,
+            on_step=True,
+            on_epoch=True,
+            logger=True,
+        )
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, _, cond = batch
         loss, recon = self._step_loss(x, cond)
-        self.log_dict({"val_loss": loss, "val_recon": recon}, prog_bar=True)
+        self.log_dict(
+            {"val_loss": loss, "val_recon": recon},
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+            logger=True,
+        )
 
     def test_step(self, batch, batch_idx):
         x, _, cond = batch
@@ -107,8 +138,8 @@ class QuadDFMModule(LightningModule):
             c_factor = torch.from_numpy(c_factor).to(xt).float()
             if torch.isnan(c_factor).any():
                 c_factor = torch.nan_to_num(c_factor)
-            cond_flows = (eye - xt.unsqueeze(-1)) * c_factor.unsqueeze(-2)  # [B, L, K, K]
-            flow = (flow_probs.unsqueeze(-2) * cond_flows).sum(-1)  # [B, L, K]
+            cond_flows = (eye - xt.unsqueeze(-1)) * c_factor.unsqueeze(-2)
+            flow = (flow_probs.unsqueeze(-2) * cond_flows).sum(-1)
             xt = xt + flow * (t - s)
             if (not torch.allclose(xt.sum(-1), torch.ones_like(xt[..., 0]), atol=1e-4)) or (xt < 0).any():
                 xt = simplex_proj(xt)

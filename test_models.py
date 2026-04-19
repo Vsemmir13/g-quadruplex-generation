@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fast smoke test for VAE/LSTM/DFM")
+    parser = argparse.ArgumentParser(description="Fast smoke test for VAE/LSTM/DFM variants")
     parser.add_argument("--file_path_quadruplex", type=str, required=True)
     parser.add_argument("--file_path_seq", type=str, required=True)
     parser.add_argument("--seq_len", type=int, default=512)
@@ -54,6 +54,13 @@ def main():
     dfm_train_loader = DataLoader(dfm_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     dfm_val_loader = DataLoader(dfm_val, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
     dfm_model = QuadDFMModule(seq_len=args.seq_len)
+    dfm_transformer_model = QuadDFMModule(
+        backbone="transformer",
+        seq_len=args.seq_len,
+        hidden_dim=128,
+        num_transformer_layers=2,
+        num_attention_heads=4,
+    )
 
     accelerator = "gpu" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
     trainer = pl.Trainer(
@@ -75,7 +82,10 @@ def main():
     logging.info("Smoke test DFM...")
     trainer.fit(dfm_model, dfm_train_loader, dfm_val_loader)
 
-    logging.info("All smoke tests passed (fast_dev_run).")
+    logging.info("Smoke test DFM Transformer...")
+    trainer.fit(dfm_transformer_model, dfm_train_loader, dfm_val_loader)
+
+    logging.info("All smoke tests passed.")
 
 
 if __name__ == "__main__":
