@@ -1,14 +1,23 @@
-from __future__ import annotations
-
 import math
-from dataclasses import dataclass
+import inspect
 
 import numpy as np
 import pytorch_lightning as pl
 import torch
 
+from models.dna_model import CNNModel
 
-def _frechet_distance(real_emb: np.ndarray, gen_emb: np.ndarray, eps: float = 1e-6) -> float:
+
+def _torch_load_checkpoint(path: str, map_location):
+    """Lightning checkpoints contain pickled objects (e.g. argparse.Namespace); PyTorch 2.6+ defaults weights_only=True."""
+    load_sig = inspect.signature(torch.load)
+    kwargs = {"map_location": map_location}
+    if "weights_only" in load_sig.parameters:
+        kwargs["weights_only"] = False
+    return torch.load(path, **kwargs)
+
+
+def _frechet_distance(real_emb, gen_emb, eps=1e-6):
     mu_r = np.mean(real_emb, axis=0)
     mu_g = np.mean(gen_emb, axis=0)
     cov_r = np.cov(real_emb, rowvar=False)
@@ -29,44 +38,13 @@ def _frechet_distance(real_emb: np.ndarray, gen_emb: np.ndarray, eps: float = 1e
     return max(fbd, 0.0)
 
 
-@dataclass(frozen=True)
-class FBDEmbedderCfg:
-    checkpoint_path: str
-    hidden_dim: int = 128
-    num_cnn_stacks: int = 4
-    p_dropout: float = 0.2
-    num_classes: int = 47
-
-
 class CNNCLSEmbedder:
-    """
-    Lightweight wrapper around the original paper's CNN classifier backbone
-    (dirichlet-flow-matching `CNNModel` in clean_data mode) to produce embeddings.
-    """
 
-    def __init__(self, cfg: FBDEmbedderCfg, device: torch.device):
-        import os
-        import sys
-        from types import SimpleNamespace
+    def __init__(self, device):
 
-        dfm_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dirichlet-flow-matching"))
-        if dfm_root not in sys.path:
-            sys.path.append(dfm_root)
-        from model.dna_models import CNNModel  # type: ignore
-
-        args = SimpleNamespace(
-            hidden_dim=cfg.hidden_dim,
-            num_cnn_stacks=cfg.num_cnn_stacks,
-            dropout=cfg.p_dropout,
-            clean_data=True,
-            cls_expanded_simplex=False,
-            mode="dirichlet",
-            cls_free_guidance=False,
-        )
         self.device = device
-        self.model = CNNModel(args=args, alphabet_size=4, num_cls=cfg.num_classes, classifier=True).to(device)
-
-        state = torch.load(cfg.checkpoint_path, map_location=device)
+        self.model = CNNModel(vocab_size=4, hidden_dim=128, num_cnn_stacks=4, p_dropout=0.2, num_classes=47, classifier=True, clean_data=True).to(device)
+        state = _torch_load_checkpoint("checkpoints/melanoma_fbd/epoch=9-step=5540.ckpt", map_location=device)
         if isinstance(state, dict) and "state_dict" in state:
             state = state["state_dict"]
         if not isinstance(state, dict):
@@ -82,7 +60,7 @@ class CNNCLSEmbedder:
         self.model.eval()
 
     @torch.no_grad()
-    def encode(self, seq_ids: torch.Tensor) -> np.ndarray:
+    def encode(self, seq_ids):
         t = torch.zeros(seq_ids.size(0), device=self.device)
         _, emb = self.model(seq_ids.to(self.device), t=t, return_embedding=True)
         return emb.detach().cpu().numpy()
@@ -92,38 +70,30 @@ class GenerativeMetricsCallback(pl.Callback):
     def __init__(
         self,
         *,
-        train_sequences: list[torch.Tensor],
-        seq_len: int,
-        sample_size: int = 256,
-        log_prefix: str = "val_",
-        mel_embedder: FBDEmbedderCfg | None = None,
-        fb_embedder: FBDEmbedderCfg | None = None,
-        g4hunter_window: int = 25,
+        train_sequences,
+        seq_len,
+        sample_size=256,
+        log_prefix="val_",
+        g4hunter_window=25,
     ):
         super().__init__()
         self.seq_len = int(seq_len)
         self.sample_size = int(sample_size)
         self.log_prefix = str(log_prefix)
         self._train_set = {tuple(s.tolist()) for s in train_sequences}
-        self._mel_cfg = mel_embedder
-        self._fb_cfg = fb_embedder
         self._g4hunter_window = int(g4hunter_window)
-
-        self._last_val_batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None
-        self._mel: CNNCLSEmbedder | None = None
-        self._fb: CNNCLSEmbedder | None = None
+        self._last_val_batch = None
+        self._mel = None
+        self._fb = None
+        self._gen_chunk_size = 32
 
     @staticmethod
-    def _ids_to_seq(ids: torch.Tensor) -> str:
+    def _ids_to_seq(ids):
         alphabet = "ACGT"
         return "".join(alphabet[int(t)] if 0 <= int(t) < 4 else "N" for t in ids.tolist())
 
     @staticmethod
-    def _g4hunter_base_scores(seq: str) -> np.ndarray:
-        """
-        Approximation of G4Hunter nucleotide scoring:
-        runs of G get +1..+4 (capped), runs of C get -1..-4 (capped), others 0.
-        """
+    def _g4hunter_base_scores(seq):
         scores = np.zeros(len(seq), dtype=np.float32)
         i = 0
         while i < len(seq):
@@ -140,22 +110,20 @@ class GenerativeMetricsCallback(pl.Callback):
         return scores
 
     @classmethod
-    def _g4hunter_seq_score(cls, seq: str, window: int) -> float:
+    def _g4hunter_seq_score(cls, seq, window):
         base = cls._g4hunter_base_scores(seq)
         if len(base) == 0:
             return 0.0
         if window <= 1:
             return float(np.max(np.abs(base)))
         if len(base) < window:
-            # Original G4Hunter CalScore returns an empty list in this case.
-            # For metric aggregation we map this to 0.0.
             return 0.0
         kernel = np.ones(window, dtype=np.float32) / float(window)
         smooth = np.convolve(base, kernel, mode="valid")
         return float(np.max(np.abs(smooth)))
 
     @classmethod
-    def _g4hunter_scores(cls, seqs: list[str], window: int) -> np.ndarray:
+    def _g4hunter_scores(cls, seqs, window):
         return np.array([cls._g4hunter_seq_score(s, window=window) for s in seqs], dtype=np.float32)
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
@@ -163,7 +131,7 @@ class GenerativeMetricsCallback(pl.Callback):
             x, y, cond = batch
             self._last_val_batch = (x.detach(), y.detach(), cond.detach())
 
-    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
+    def on_validation_epoch_end(self, trainer, pl_module):
         if self._last_val_batch is None:
             return
         x, y, cond = self._last_val_batch
@@ -177,14 +145,16 @@ class GenerativeMetricsCallback(pl.Callback):
         y = y[:n].to(device)
 
         # --- generation ---
-        if hasattr(pl_module, "generate") and callable(getattr(pl_module, "generate")):
-            try:
-                gen = pl_module.generate(cond)  # type: ignore[misc]
-            except TypeError:
-                gen = pl_module.generate(cond, seq_len=y.size(1))  # type: ignore[misc]
-        else:
+        if not hasattr(pl_module, "generate") or not callable(getattr(pl_module, "generate")):
             return
-        gen = gen.long().detach().cpu()
+        gen_chunks = []
+        with torch.no_grad():
+            for start in range(0, n, self._gen_chunk_size):
+                end = min(n, start + self._gen_chunk_size)
+                cond_chunk = cond[start:end]
+                gen_chunk = self._generate_with_signature(pl_module, cond_chunk, seq_len=int(y.size(1)))
+                gen_chunks.append(gen_chunk.long().detach().cpu())
+        gen = torch.cat(gen_chunks, dim=0)
         real = y.long().detach().cpu()
 
         # --- perplexity from val_loss (epoch) ---
@@ -197,20 +167,12 @@ class GenerativeMetricsCallback(pl.Callback):
         novelty = float(np.mean([tuple(s.tolist()) not in self._train_set for s in gen]))
         pl_module.log(self.log_prefix + "novelty", novelty, prog_bar=True, logger=True, on_epoch=True)
 
-        # --- FBD (Melanoma / Flybrain) ---
-        if self._mel_cfg is not None:
-            if self._mel is None:
-                self._mel = CNNCLSEmbedder(self._mel_cfg, device=device)
-            mel_real = self._mel.encode(real.to(device))
-            mel_gen = self._mel.encode(gen.to(device))
-            pl_module.log(self.log_prefix + "melanoma_fbd", _frechet_distance(mel_real, mel_gen), prog_bar=False, logger=True, on_epoch=True)
-
-        if self._fb_cfg is not None:
-            if self._fb is None:
-                self._fb = CNNCLSEmbedder(self._fb_cfg, device=device)
-            fb_real = self._fb.encode(real.to(device))
-            fb_gen = self._fb.encode(gen.to(device))
-            pl_module.log(self.log_prefix + "flybrain_fbd", _frechet_distance(fb_real, fb_gen), prog_bar=False, logger=True, on_epoch=True)
+        # --- FBD (Melanoma; embedder loaded once per trainer run) ---
+        if self._mel is None:
+            self._mel = CNNCLSEmbedder(device)
+        mel_real = self._mel.encode(real.to(device))
+        mel_gen = self._mel.encode(gen.to(device))
+        pl_module.log(self.log_prefix + "melanoma_fbd", _frechet_distance(mel_real, mel_gen), prog_bar=False, logger=True, on_epoch=True)
 
         # --- G4Hunter similarity ---
         real_seqs = [self._ids_to_seq(s) for s in real]
@@ -226,4 +188,22 @@ class GenerativeMetricsCallback(pl.Callback):
             logger=True,
             on_epoch=True,
         )
+
+    @staticmethod
+    def _generate_with_signature(pl_module, cond, seq_len):
+        generate = pl_module.generate
+        try:
+            sig = inspect.signature(generate)
+            params = sig.parameters
+            kwargs = {}
+            if "seq_len" in params:
+                kwargs["seq_len"] = seq_len
+            if "greedy" in params:
+                kwargs["greedy"] = True
+            return generate(cond, **kwargs)
+        except Exception:
+            try:
+                return generate(cond)
+            except TypeError:
+                return generate(cond, seq_len=seq_len)
 

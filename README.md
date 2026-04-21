@@ -20,18 +20,18 @@ Index Terms—discrete models, flow matching, generative models, DNA sequences, 
 
 ## What is implemented here
 
-- Main model — Discrete Dirichlet Flow Matching (DFM): `quadruplex/dfm_module.py`, `quadruplex/dfm_model.py`, `quadruplex/dfm_flow_utils.py`  
+- Main model — Discrete Dirichlet Flow Matching (DFM): `models/dfm_module.py`, `models/dfm_model.py`, `models/dfm_flow_utils.py`  
 Conditional flow‑matching model on the simplex using a Dirichlet probability path. Two backbones are supported: residual CNN (`dfm`) and a stronger Transformer variant (`dfm_transformer`).
-- Baseline — LSTM (autoregressive LM): `quadruplex/lstm.py`  
+- Baseline — LSTM (autoregressive LM): `models/lstm.py`  
 Next‑token prediction conditioned on `level_norm`.
-- Baseline — VAE (conditional CNN, positional latent): `quadruplex/vae.py`  
+- Baseline — VAE (conditional CNN, positional latent): `models/vae.py`  
 Conditional reconstruction/generation with a positional latent and KL warmup.
 
 ---
 
 ## Dataset and conditioning
 
-Dataset code: `quadruplex/data_utils.py` (`QuadDataset`).
+Dataset code: `utils/data_utils.py` (`QuadDataset`).
 
 - Sequences: extract windows of length `seq_len` from `hg38.fa` using coordinates from a BED file.
 - Filtering: windows containing `N` are discarded.
@@ -46,9 +46,9 @@ Dataset code: `quadruplex/data_utils.py` (`QuadDataset`).
 Runs `fast_dev_run=True` (1 train batch + 1 val batch) for LSTM/VAE/DFM-CNN/DFM-Transformer:
 
 ```bash
-python quadruplex/test_models.py \
-  --file_path_quadruplex quadruplex/data/EQ_hg38_lifted.bed \
-  --file_path_seq quadruplex/data/hg38.fa
+python tests/test_models.py \
+  --file_path_quadruplex data/EQ_hg38_lifted.bed \
+  --file_path_seq data/hg38.fa
 ```
 
 ---
@@ -57,46 +57,46 @@ python quadruplex/test_models.py \
 
 ### LSTM or VAE (single entrypoint)
 
-Script: `quadruplex/main.py`
+Script: `main.py`
 
 LSTM:
 
 ```bash
-python quadruplex/main.py --model_type lstm \
+python main.py --model_type lstm \
   --experiment_name training_lstm
-  --file_path_quadruplex quadruplex/data/EQ_hg38_lifted.bed \
-  --file_path_seq quadruplex/data/hg38.fa \
+  --file_path_quadruplex data/EQ_hg38_lifted.bed \
+  --file_path_seq data/hg38.fa \
   --epochs 1 --batch_size 256
 ```
 
 VAE:
 
 ```bash
-python quadruplex/main.py --model_type vae \
+python main.py --model_type vae \
   --experiment_name training_vae
-  --file_path_quadruplex quadruplex/data/EQ_hg38_lifted.bed \
-  --file_path_seq quadruplex/data/hg38.fa \
+  --file_path_quadruplex data/EQ_hg38_lifted.bed \
+  --file_path_seq data/hg38.fa \
   --epochs 1 --batch_size 128
 ```
 
-DFM (main model):
+DFM:
 
 ```bash
-python quadruplex/main.py --model_type dfm \
+python main.py --model_type dfm \
   --experiment_name training_dfm
-  --file_path_quadruplex quadruplex/data/EQ_hg38_lifted.bed \
-  --file_path_seq quadruplex/data/hg38.fa \
+  --file_path_quadruplex data/EQ_hg38_lifted.bed \
+  --file_path_seq data/hg38.fa \
   --epochs 1 --batch_size 128 \
   --alpha_max 12 --alpha_scale 15 --num_integration_steps 64
 ```
 
-DFM Transformer (stronger backbone):
+DFM Transformer:
 
 ```bash
-python quadruplex/main.py --model_type dfm_transformer \
+python main.py --model_type dfm_transformer \
   --experiment_name training_dfm_transformer \
-  --file_path_quadruplex quadruplex/data/EQ_hg38_lifted.bed \
-  --file_path_seq quadruplex/data/hg38.fa \
+  --file_path_quadruplex data/EQ_hg38_lifted.bed \
+  --file_path_seq data/hg38.fa \
   --epochs 1 --batch_size 64 \
   --hidden_dim 256 \
   --num_transformer_layers 6 \
@@ -105,13 +105,13 @@ python quadruplex/main.py --model_type dfm_transformer \
   --alpha_max 12 --alpha_scale 15 --num_integration_steps 64
 ```
 
-After `test`, examples are saved to JSONL: `quad_<model>_examples.jsonl`.
+After `test`, examples are saved to JSONL: `examples/{model_type}/{experiment_name}.jsonl`.
 
 ---
 
 ## Multi‑GPU and DDP
 
-`quadruplex/main.py` and `quadruplex/train_dfm.py` automatically enable DDP when:
+`main.py` automatically enable DDP when:
 
 - CUDA is available
 - and `devices > 1`
@@ -124,29 +124,18 @@ Useful flags:
 Example:
 
 ```bash
-python quadruplex/main.py --model_type vae \
-  --file_path_quadruplex quadruplex/data/EQ_hg38_lifted.bed \
-  --file_path_seq quadruplex/data/hg38.fa \
+python main.py --model_type vae \
+  --file_path_quadruplex data/EQ_hg38_lifted.bed \
+  --file_path_seq data/hg38.fa \
 ```
 
----
-
-## Metrics calculation
-
-The utility loads a trained checkpoint, builds the same test split logic as in `main.py`, generates sequences, and reports metrics.
-
-```bash
-python quadruplex/metrics.py \
-  --model_type dfm \
-  --checkpoint checkpoints/dfm/training_dfm/last.ckpt
-```
 ---
 
 ## Metrics tables
 
-| Model           | Train loss | Val loss | Test loss |     Perplexity      |    G4Bert ↓  | G4Bert PLL ↑ | G4Hunter | Notes |
-| --------------- | ---------- | -------- | --------- | --------------------| ------------ | ------------ | -----    | ----- |
-| LSTM            |            |          |           |                     |              |              |          |       |
-| VAE             |            |          |           |                     |              |              |          |       |
-| DFM (Dirichlet) |            |          |           |                     |              |              |          |       | 
-
+| Model | Train loss | Val loss | Test loss |  Perplexity   |  FBD  | G4Hunter | Notes |
+| ---   | --         | -------- | --------- | --------------| ------| -------- | ----- |
+| LSTM  |            |          |           |               |       |          |       |
+| VAE   |            |          |           |               |       |          |       |
+| DFM   |            |          |           |               |       |          |       |
+| DFM transformer |            |          |           |               |       |          |       |

@@ -3,6 +3,7 @@ import torch
 import random
 import logging
 import json
+import os
 from torch.utils.data import Dataset
 from pyfaidx import Fasta
 
@@ -67,8 +68,6 @@ class QuadDataset(Dataset):
             x = encoded_seq
             y = encoded_seq
         else:
-            # Autoregressive next-token prediction with explicit BOS token.
-            # Keeps sequence length constant (seq_len) for easier batching/logging.
             bos = torch.tensor([BOS_TOKEN_ID], dtype=torch.long)
             x = torch.cat([bos, encoded_seq[:-1]], dim=0)
             y = encoded_seq
@@ -77,10 +76,12 @@ class QuadDataset(Dataset):
         return x, y, torch.tensor([level_norm], dtype=torch.float32)
 
 def decode_seq(ids):
-    # For non-ACGT tokens (e.g. BOS), fall back to 'N'.
     return "".join(ID2BASE.get(int(i), "N") for i in ids)
 
-def save_examples(predictions, output_path="vae_examples.jsonl", max_examples=20, *, compact: bool = False):
+def save_examples(predictions, output_path, max_examples=20, *, compact: bool = False):
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
     saved = 0
     with open(output_path, "w", encoding="utf-8") as f:
         for batch_out in predictions:

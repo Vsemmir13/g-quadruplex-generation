@@ -6,11 +6,11 @@ import logging
 
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.strategies import DDPStrategy
-from data_utils import QuadDataset, load_data, save_examples
-from dfm_module import QuadDFMModule
-from gen_metrics_callback import FBDEmbedderCfg, GenerativeMetricsCallback
-from lstm import QuadLSTM
-from vae import DNAConvVAE
+from utils.data_utils import QuadDataset, load_data, save_examples
+from models.dfm_module import QuadDFMModule
+from utils.gen_metrics_callback import GenerativeMetricsCallback
+from models.lstm import QuadLSTM
+from models.vae import DNAConvVAE
 from torch.utils.data import DataLoader
 from pytorch_lightning.loggers import TensorBoardLogger
 from sklearn.model_selection import train_test_split
@@ -33,7 +33,6 @@ def main():
     parser.add_argument("--test", action="store_true", help="Run test after training")
     parser.add_argument("--model_type", type=str, default='lstm', choices=['lstm', 'vae', 'dfm', 'dfm_transformer'])
 
-    # DFM hyperparameters
     parser.add_argument("--seq_len", type=int, default=512)
     parser.add_argument("--hidden_dim", type=int, default=256)
     parser.add_argument("--num_cnn_stacks", type=int, default=2)
@@ -49,15 +48,9 @@ def main():
     parser.add_argument("--num_integration_steps", type=int, default=64)
     parser.add_argument("--flow_temp", type=float, default=1.0)
 
-    # Validation metrics (logged to TensorBoard)
     parser.add_argument("--val_metrics_sample_size", type=int, default=256)
-    parser.add_argument("--melanoma_clean_cls_ckpt", type=str, default=None)
-    parser.add_argument("--flybrain_clean_cls_ckpt", type=str, default=None)
-    parser.add_argument("--fbd_hidden_dim", type=int, default=128)
-    parser.add_argument("--fbd_num_cnn_stacks", type=int, default=4)
-    parser.add_argument("--fbd_p_dropout", type=float, default=0.2)
-    parser.add_argument("--fbd_num_classes", type=int, default=47)
     parser.add_argument("--g4hunter_window", type=int, default=25)
+
     args = parser.parse_args()
 
     logging.info("Loading data...")
@@ -134,30 +127,10 @@ def main():
         mode="min"
     )
 
-    mel_cfg = None
-    fb_cfg = None
-    if args.melanoma_clean_cls_ckpt:
-        mel_cfg = FBDEmbedderCfg(
-            checkpoint_path=args.melanoma_clean_cls_ckpt,
-            hidden_dim=args.fbd_hidden_dim,
-            num_cnn_stacks=args.fbd_num_cnn_stacks,
-            p_dropout=args.fbd_p_dropout,
-            num_classes=args.fbd_num_classes,
-        )
-    if args.flybrain_clean_cls_ckpt:
-        fb_cfg = FBDEmbedderCfg(
-            checkpoint_path=args.flybrain_clean_cls_ckpt,
-            hidden_dim=args.fbd_hidden_dim,
-            num_cnn_stacks=args.fbd_num_cnn_stacks,
-            p_dropout=args.fbd_p_dropout,
-            num_classes=args.fbd_num_classes,
-        )
     metrics_cb = GenerativeMetricsCallback(
         train_sequences=train_dataset.encoded_seqs,
         seq_len=args.seq_len,
         sample_size=args.val_metrics_sample_size,
-        mel_embedder=mel_cfg,
-        fb_embedder=fb_cfg,
         g4hunter_window=args.g4hunter_window,
     )
 

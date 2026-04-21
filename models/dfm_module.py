@@ -2,35 +2,35 @@ import torch
 import torch.nn.functional as F
 from pytorch_lightning import LightningModule
 
-from dfm_flow_utils import (
+from .dfm_flow_utils import (
     DirichletConditionalFlow,
     expand_simplex,
     sample_cond_prob_path,
     simplex_proj,
 )
-from dfm_model import QuadCondCNN, QuadCondTransformer
+from .dfm_model import QuadCondCNN, QuadCondTransformer
 
 
 class QuadDFMModule(LightningModule):
     def __init__(
         self,
         *,
-        backbone: str = "cnn",
-        seq_len: int = 512,
-        vocab_size: int = 4,
-        cond_dim: int = 1,
-        hidden_dim: int = 256,
-        num_cnn_stacks: int = 2,
-        num_transformer_layers: int = 6,
-        num_attention_heads: int = 8,
-        transformer_ff_mult: int = 4,
-        dropout: float = 0.1,
-        lr: float = 1e-3,
-        alpha_max: float = 12.0,
-        alpha_scale: float = 15.0,
-        fix_alpha: float | None = None,
-        prior_pseudocount: float = 2.0,
-        num_integration_steps: int = 64,
+        backbone="cnn",
+        seq_len=512,
+        vocab_size=4,
+        cond_dim=1,
+        hidden_dim=256,
+        num_cnn_stacks=2,
+        num_transformer_layers=6,
+        num_attention_heads=8,
+        transformer_ff_mult=4,
+        dropout=0.1,
+        lr=1e-3,
+        alpha_max=12.0,
+        alpha_scale=15.0,
+        fix_alpha=None,
+        prior_pseudocount=2.0,
+        num_integration_steps=64,
         flow_temp: float = 1.0,
     ):
         super().__init__()
@@ -106,7 +106,7 @@ class QuadDFMModule(LightningModule):
             "gen": gen.detach().cpu(),
         }
 
-    def _step_loss(self, seq: torch.Tensor, cond: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _step_loss(self, seq, cond):
         xt, alphas = sample_cond_prob_path(
             seq,
             self.hparams.vocab_size,
@@ -120,7 +120,7 @@ class QuadDFMModule(LightningModule):
         return recon, recon
 
     @torch.no_grad()
-    def generate(self, cond: torch.Tensor) -> torch.Tensor:
+    def generate(self, cond):
         b = cond.size(0)
         seq_len = int(self.hparams.seq_len)
         k = int(self.hparams.vocab_size)

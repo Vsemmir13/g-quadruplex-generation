@@ -4,15 +4,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from dfm_flow_utils import GaussianFourierProjection
+from .dfm_flow_utils import GaussianFourierProjection
 
 
 class Dense(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int):
+    def __init__(self, in_dim, out_dim):
         super().__init__()
         self.linear = nn.Linear(in_dim, out_dim)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x):
         return self.linear(x)
 
 
@@ -21,13 +21,13 @@ class QuadCondCNN(nn.Module):
     def __init__(
         self,
         *,
-        alphabet_size: int = 4,
-        cond_dim: int = 1,
-        hidden_dim: int = 256,
-        num_cnn_stacks: int = 2,
-        dropout: float = 0.1,
-        expanded_simplex: bool = True,
-        time_embed_scale: float = 1.0,
+        alphabet_size = 4,
+        cond_dim = 1,
+        hidden_dim = 256,
+        num_cnn_stacks = 2,
+        dropout = 0.1,
+        expanded_simplex = True,
+        time_embed_scale = 1.0,
     ):
         super().__init__()
         self.alphabet_size = int(alphabet_size)
@@ -71,7 +71,7 @@ class QuadCondCNN(nn.Module):
             nn.Conv1d(self.hidden_dim, self.alphabet_size, kernel_size=1),
         )
 
-    def forward(self, xt: torch.Tensor, t: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+    def forward(self, xt, t, cond):
         # xt: [B, L, C] -> [B, C, L]
         time_emb = F.relu(self.time_embedder(t))
         cond_emb = self.cond_embedder(cond)
@@ -95,16 +95,16 @@ class QuadCondTransformer(nn.Module):
     def __init__(
         self,
         *,
-        seq_len: int,
-        alphabet_size: int = 4,
-        cond_dim: int = 1,
-        hidden_dim: int = 256,
-        num_layers: int = 6,
-        num_heads: int = 8,
-        ff_mult: int = 4,
-        dropout: float = 0.1,
-        expanded_simplex: bool = True,
-        time_embed_scale: float = 1.0,
+        seq_len,
+        alphabet_size = 4,
+        cond_dim = 1,
+        hidden_dim = 256,
+        num_layers = 6,
+        num_heads = 8,
+        ff_mult = 4,
+        dropout=0.1,
+        expanded_simplex=True,
+        time_embed_scale=1.0,
     ):
         super().__init__()
         self.seq_len = int(seq_len)
@@ -152,7 +152,7 @@ class QuadCondTransformer(nn.Module):
             nn.Linear(self.hidden_dim, self.alphabet_size),
         )
 
-    def forward(self, xt: torch.Tensor, t: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+    def forward(self, xt, t, cond):
         h = self.in_proj(xt)
         h = h + self.pos_embed[:, : h.size(1), :]
         h = h + self.time_embedder(t)[:, None, :]

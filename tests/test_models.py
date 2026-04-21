@@ -6,10 +6,10 @@ import torch
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Subset
 
-from data_utils import QuadDataset, load_data
-from dfm_module import QuadDFMModule
-from lstm import QuadLSTM
-from vae import DNAConvVAE
+from utils.data_utils import QuadDataset, load_data
+from models.dfm_module import QuadDFMModule
+from models.lstm import QuadLSTM
+from models.vae import DNAConvVAE
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
