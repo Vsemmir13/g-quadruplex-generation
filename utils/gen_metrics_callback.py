@@ -1,6 +1,6 @@
 import math
 import inspect
-
+import random
 import numpy as np
 import pytorch_lightning as pl
 import torch
@@ -83,6 +83,7 @@ class GenerativeMetricsCallback(pl.Callback):
         self._train_set = {tuple(s.tolist()) for s in train_sequences}
         self._g4hunter_window = int(g4hunter_window)
         self._last_val_batch = None
+        self._last_test_batch = None
         self._mel = None
         self._fb = None
         self._gen_chunk_size = 32
@@ -126,17 +127,7 @@ class GenerativeMetricsCallback(pl.Callback):
     def _g4hunter_scores(cls, seqs, window):
         return np.array([cls._g4hunter_seq_score(s, window=window) for s in seqs], dtype=np.float32)
 
-    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
-        if self._last_val_batch is None:
-            x, y, cond = batch
-            self._last_val_batch = (x.detach(), y.detach(), cond.detach())
-
-    def on_validation_epoch_end(self, trainer, pl_module):
-        if self._last_val_batch is None:
-            return
-        x, y, cond = self._last_val_batch
-        self._last_val_batch = None
-
+    def _run_generative_metrics(self, trainer, pl_module, _x, y, cond, log_prefix, loss_metric_names):
         device = pl_module.device
         n = min(self.sample_size, int(cond.size(0)))
         if n <= 0:
@@ -157,37 +148,106 @@ class GenerativeMetricsCallback(pl.Callback):
         gen = torch.cat(gen_chunks, dim=0)
         real = y.long().detach().cpu()
 
-        # --- perplexity from val_loss (epoch) ---
-        val_loss = trainer.callback_metrics.get("val_loss")
-        if isinstance(val_loss, torch.Tensor):
-            ppl = float(math.exp(float(val_loss.detach().cpu().item())))
-            pl_module.log(self.log_prefix + "perplexity", ppl, prog_bar=True, logger=True, on_epoch=True)
+        # --- perplexity from epoch loss (val_loss / test loss) ---
+        loss_tensor = None
+        for name in loss_metric_names:
+            v = trainer.callback_metrics.get(name)
+            if isinstance(v, torch.Tensor):
+                loss_tensor = v
+                break
+        if loss_tensor is not None:
+            ppl = float(math.exp(float(loss_tensor.detach().cpu().item())))
+            pl_module.log(log_prefix + "perplexity", ppl, prog_bar=True, logger=True, on_epoch=True)
 
         # --- novelty ---
         novelty = float(np.mean([tuple(s.tolist()) not in self._train_set for s in gen]))
-        pl_module.log(self.log_prefix + "novelty", novelty, prog_bar=True, logger=True, on_epoch=True)
+        pl_module.log(log_prefix + "novelty", novelty, prog_bar=True, logger=True, on_epoch=True)
 
         # --- FBD (Melanoma; embedder loaded once per trainer run) ---
         if self._mel is None:
             self._mel = CNNCLSEmbedder(device)
         mel_real = self._mel.encode(real.to(device))
         mel_gen = self._mel.encode(gen.to(device))
-        pl_module.log(self.log_prefix + "melanoma_fbd", _frechet_distance(mel_real, mel_gen), prog_bar=False, logger=True, on_epoch=True)
+        pl_module.log(log_prefix + "melanoma_fbd", _frechet_distance(mel_real, mel_gen), prog_bar=False, logger=True, on_epoch=True)
 
         # --- G4Hunter similarity ---
         real_seqs = [self._ids_to_seq(s) for s in real]
         gen_seqs = [self._ids_to_seq(s) for s in gen]
         real_g4 = self._g4hunter_scores(real_seqs, window=self._g4hunter_window)
         gen_g4 = self._g4hunter_scores(gen_seqs, window=self._g4hunter_window)
-        pl_module.log(self.log_prefix + "g4hunter_real_mean", float(np.mean(real_g4)), prog_bar=False, logger=True, on_epoch=True)
-        pl_module.log(self.log_prefix + "g4hunter_gen_mean", float(np.mean(gen_g4)), prog_bar=False, logger=True, on_epoch=True)
+        pl_module.log(log_prefix + "g4hunter_real_mean", float(np.mean(real_g4)), prog_bar=False, logger=True, on_epoch=True)
+        pl_module.log(log_prefix + "g4hunter_gen_mean", float(np.mean(gen_g4)), prog_bar=False, logger=True, on_epoch=True)
         pl_module.log(
-            self.log_prefix + "g4hunter_gap",
+            log_prefix + "g4hunter_gap",
             float(np.mean(np.abs(real_g4 - gen_g4))),
             prog_bar=True,
             logger=True,
             on_epoch=True,
         )
+
+    def on_validation_epoch_start(self, trainer, pl_module):
+        self._val_cond, self._val_y = [], []
+        self._val_seen = 0
+
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, *args):
+        _, y, cond = batch
+        self._val_seen = self._reservoir_update(
+            self._val_cond, self._val_y, self._val_seen, cond, y
+        )
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if not self._val_cond:
+            return
+
+        self._run_generative_metrics(
+            trainer,
+            pl_module,
+            None,
+            y=torch.stack(self._val_y),
+            cond=torch.stack(self._val_cond),
+            log_prefix=self.log_prefix,
+            loss_metric_names=("val_loss",),
+        )
+    
+    def on_test_epoch_start(self, trainer, pl_module):
+        self._test_cond, self._test_y = [], []
+        self._test_seen = 0
+
+    def on_test_batch_end(self, trainer, pl_module, outputs, batch, *args):
+        _, y, cond = batch
+        self._test_seen = self._reservoir_update(
+            self._test_cond, self._test_y, self._test_seen, cond, y
+        )
+
+    def on_test_epoch_end(self, trainer, pl_module):
+        if not self._test_cond:
+            return
+
+        self._run_generative_metrics(
+            trainer,
+            pl_module,
+            None,
+            y=torch.stack(self._test_y),
+            cond=torch.stack(self._test_cond),
+            log_prefix="test_",
+            loss_metric_names=("test_loss",),
+        )
+        
+    def _reservoir_update(self, store_cond, store_y, seen, cond, y):
+        cond_cpu = cond.detach().cpu()
+        y_cpu = y.detach().cpu()
+
+        for i in range(len(cond_cpu)):
+            seen += 1
+            if len(store_cond) < self.sample_size:
+                store_cond.append(cond_cpu[i])
+                store_y.append(y_cpu[i])
+            else:
+                j = random.randint(0, seen - 1)
+                if j < self.sample_size:
+                    store_cond[j] = cond_cpu[i]
+                    store_y[j] = y_cpu[i]
+        return seen
 
     @staticmethod
     def _generate_with_signature(pl_module, cond, seq_len):
@@ -206,4 +266,3 @@ class GenerativeMetricsCallback(pl.Callback):
                 return generate(cond)
             except TypeError:
                 return generate(cond, seq_len=seq_len)
-
