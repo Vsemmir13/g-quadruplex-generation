@@ -28,18 +28,15 @@ def sample_cond_prob_path(
     seq: torch.Tensor,
     alphabet_size: int,
     *,
-    alpha_scale: float = 15.0,
-    alpha_max: float = 12.0,
+    alpha_scale: float = 2.0,
+    alpha_max: float = 8.0,
     fix_alpha: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     b, l = seq.shape
     seq_one_hot = F.one_hot(seq, num_classes=alphabet_size).float()
+    alphas = torch.from_numpy(1.0 + scipy.stats.expon().rvs(size=b).astype(np.float32) * float(alpha_scale)).to(seq.device)
     if fix_alpha is not None:
         alphas = torch.ones(b, device=seq.device, dtype=torch.float32) * float(fix_alpha)
-    else:
-        draws = scipy.stats.expon().rvs(size=b).astype(np.float32)
-        alphas = torch.from_numpy(1.0 + draws * float(alpha_scale)).to(seq.device)
-        alphas = torch.clamp(alphas, max=float(alpha_max))
     alphas_ = torch.ones(b, l, alphabet_size, device=seq.device, dtype=torch.float32)
     alphas_ = alphas_ + seq_one_hot * (alphas[:, None, None] - 1)
     xt = torch.distributions.Dirichlet(alphas_).sample()
@@ -52,18 +49,17 @@ def expand_simplex(
     prior_pseudocount: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     prior_weights = (prior_pseudocount / (alphas + prior_pseudocount - 1))[:, None, None]
-    expanded = torch.cat([xt * (1 - prior_weights), xt * prior_weights], dim=-1)
-    return expanded, prior_weights
+    return torch.cat([xt * (1 - prior_weights), xt * prior_weights], dim=-1), prior_weights
 
 
 class DirichletConditionalFlow:
 
     def __init__(
         self,
-        k: int,
+        k: int = 20,
         alpha_min: float = 1.0,
-        alpha_max: float = 12.0,
-        alpha_spacing: float = 0.001,
+        alpha_max: float = 100.0,
+        alpha_spacing: float = 0.01,
     ):
         self.k = k
         self.alphas = np.arange(alpha_min, alpha_max + alpha_spacing, alpha_spacing, dtype=np.float64)

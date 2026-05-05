@@ -41,7 +41,6 @@ def _frechet_distance(real_emb, gen_emb, eps=1e-6):
 class CNNCLSEmbedder:
 
     def __init__(self, device):
-
         self.device = device
         self.model = CNNModel(vocab_size=4, hidden_dim=128, num_cnn_stacks=4, p_dropout=0.2, num_classes=47, classifier=True, clean_data=True).to(device)
         state = _torch_load_checkpoint("checkpoints/melanoma_fbd/epoch=9-step=5540.ckpt", map_location=device)
@@ -157,33 +156,41 @@ class GenerativeMetricsCallback(pl.Callback):
                 break
         if loss_tensor is not None:
             ppl = float(math.exp(float(loss_tensor.detach().cpu().item())))
-            pl_module.log(log_prefix + "perplexity", ppl, prog_bar=True, logger=True, on_epoch=True)
+            pl_module.log(log_prefix + "perplexity", ppl, prog_bar=True, logger=True, on_epoch=True, sync_dist=True)
 
         # --- novelty ---
         novelty = float(np.mean([tuple(s.tolist()) not in self._train_set for s in gen]))
-        pl_module.log(log_prefix + "novelty", novelty, prog_bar=True, logger=True, on_epoch=True)
+        pl_module.log(log_prefix + "novelty", novelty, prog_bar=True, logger=True, on_epoch=True, sync_dist=True)
 
         # --- FBD (Melanoma; embedder loaded once per trainer run) ---
         if self._mel is None:
             self._mel = CNNCLSEmbedder(device)
         mel_real = self._mel.encode(real.to(device))
         mel_gen = self._mel.encode(gen.to(device))
-        pl_module.log(log_prefix + "melanoma_fbd", _frechet_distance(mel_real, mel_gen), prog_bar=False, logger=True, on_epoch=True)
+        pl_module.log(log_prefix + "melanoma_fbd", _frechet_distance(mel_real, mel_gen), prog_bar=False, logger=True, on_epoch=True, sync_dist=True)
 
         # --- G4Hunter similarity ---
         real_seqs = [self._ids_to_seq(s) for s in real]
         gen_seqs = [self._ids_to_seq(s) for s in gen]
         real_g4 = self._g4hunter_scores(real_seqs, window=self._g4hunter_window)
         gen_g4 = self._g4hunter_scores(gen_seqs, window=self._g4hunter_window)
-        pl_module.log(log_prefix + "g4hunter_real_mean", float(np.mean(real_g4)), prog_bar=False, logger=True, on_epoch=True)
-        pl_module.log(log_prefix + "g4hunter_gen_mean", float(np.mean(gen_g4)), prog_bar=False, logger=True, on_epoch=True)
+        pl_module.log(log_prefix + "g4hunter_real_mean", float(np.mean(real_g4)), prog_bar=False, logger=True, on_epoch=True, sync_dist=True)
+        pl_module.log(log_prefix + "g4hunter_gen_mean", float(np.mean(gen_g4)), prog_bar=False, logger=True, on_epoch=True, sync_dist=True)
         pl_module.log(
             log_prefix + "g4hunter_gap",
             float(np.mean(np.abs(real_g4 - gen_g4))),
             prog_bar=True,
             logger=True,
             on_epoch=True,
+            sync_dist=True
         )
+        
+        G4_THRESHOLD = 1.5
+        real_g4_frac = np.mean(real_g4 > G4_THRESHOLD)
+        gen_g4_frac = np.mean(gen_g4 > G4_THRESHOLD)
+        pl_module.log(log_prefix + "g4_real_frac", real_g4_frac, prog_bar=False, logger=True, on_epoch=True, sync_dist=True)
+        pl_module.log(log_prefix + "g4_gen_frac", gen_g4_frac, prog_bar=False, logger=True, on_epoch=True, sync_dist=True)
+        pl_module.log(log_prefix + "g4_frac_gap", np.abs(real_g4_frac - gen_g4_frac), prog_bar=False, logger=True, on_epoch=True, sync_dist=True)
 
     def on_validation_epoch_start(self, trainer, pl_module):
         self._val_cond, self._val_y = [], []

@@ -26,12 +26,13 @@ def load_data(file_path_quadruplex):
 
 class QuadDataset(Dataset):
     
-    def __init__(self, df, file_path_seq, typer="rec", seq_len=512):
+    def __init__(self, df, file_path_seq, typer="rec", seq_len=512, level_offset=4):
         self.file_path_seq = file_path_seq
         self.seq_len = seq_len
         self.genome = Fasta(file_path_seq)
         self.typer = typer 
         assert self.typer in ["rec", "gen"]
+        self.level_offset = int(level_offset)
         self.encoded_seqs = []
         self.levels = []
         for _, row in df.iterrows():
@@ -72,8 +73,8 @@ class QuadDataset(Dataset):
             x = torch.cat([bos, encoded_seq[:-1]], dim=0)
             y = encoded_seq
         level = self.levels[idx]
-        level_norm = (level - 4.0) / 2.0
-        return x, y, torch.tensor([level_norm], dtype=torch.float32)
+        cond = torch.tensor(int(level) - self.level_offset, dtype=torch.long)
+        return x, y, cond
 
 def decode_seq(ids):
     return "".join(ID2BASE.get(int(i), "N") for i in ids)
@@ -94,13 +95,13 @@ def save_examples(predictions, output_path, max_examples=20, *, compact: bool = 
                 if compact:
                     row = {
                         "id": saved,
-                        "cond": float(cond[i].view(-1)[0].item()),
+                        "cond": int(cond[i].item()),
                         "generation_seq": decode_seq(gen[i].tolist()),
                     }
                 else:
                     row = {
                         "id": saved,
-                        "cond": cond[i].tolist(),
+                        "cond": int(cond[i].item()),
                         "test_x": x[i].tolist(),
                         "reconstruction": recon[i].tolist(),
                         "generation": gen[i].tolist(),
@@ -112,4 +113,3 @@ def save_examples(predictions, output_path, max_examples=20, *, compact: bool = 
                 saved += 1
                 if saved >= max_examples:
                     return
-

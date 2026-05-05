@@ -23,7 +23,7 @@ Index Terms—discrete models, flow matching, generative models, DNA sequences, 
 - Main model — Discrete Dirichlet Flow Matching (DFM): `models/dfm_module.py`, `models/dfm_model.py`, `models/dfm_flow_utils.py`  
 Conditional flow‑matching model on the simplex using a Dirichlet probability path. Two backbones are supported: residual CNN (`dfm`) and a stronger Transformer variant (`dfm_transformer`).
 - Baseline — LSTM (autoregressive LM): `models/lstm.py`  
-Next‑token prediction conditioned on `level_norm`.
+Next-token prediction conditioned on categorical G4 level.
 - Baseline — VAE (conditional CNN, positional latent): `models/vae.py`  
 Conditional reconstruction/generation with a positional latent and KL warmup.
 
@@ -35,7 +35,8 @@ Dataset code: `utils/data_utils.py` (`QuadDataset`).
 
 - Sequences: extract windows of length `seq_len` from `hg38.fa` using coordinates from a BED file.
 - Filtering: windows containing `N` are discarded.
-- Condition: `level_norm` (float), fed to the models as `cond`.
+- Condition: categorical G4 level id, fed to the models as `cond`.
+  By default levels 4, 5, 6 are mapped to class ids 0, 1, 2.
 
 ---
 
