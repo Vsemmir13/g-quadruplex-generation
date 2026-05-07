@@ -142,6 +142,7 @@ class QuadLSTM(LightningModule):
         scheduler = {
             "scheduler": ReduceLROnPlateau(optimizer, mode="min", factor=0.2, patience=5),
             "monitor": "val_loss",
+            "strict": False,
         }
         return [optimizer], [scheduler]
     

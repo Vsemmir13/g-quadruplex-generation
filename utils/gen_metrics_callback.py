@@ -1,5 +1,6 @@
 import math
 import inspect
+import os
 import random
 import numpy as np
 import pytorch_lightning as pl
@@ -15,6 +16,15 @@ def _torch_load_checkpoint(path: str, map_location):
     if "weights_only" in load_sig.parameters:
         kwargs["weights_only"] = False
     return torch.load(path, **kwargs)
+
+
+def _resolve_melanoma_fbd_ckpt():
+    rel_path = os.path.join("checkpoints", "melanoma_fbd", "epoch=9-step=5540.ckpt")
+    project_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), rel_path)
+    for path in (rel_path, project_path):
+        if os.path.exists(path):
+            return path
+    return rel_path
 
 
 def _frechet_distance(real_emb, gen_emb, eps=1e-6):
@@ -43,7 +53,7 @@ class CNNCLSEmbedder:
     def __init__(self, device):
         self.device = device
         self.model = CNNModel(vocab_size=4, hidden_dim=128, num_cnn_stacks=4, p_dropout=0.2, num_classes=47, classifier=True, clean_data=True).to(device)
-        state = _torch_load_checkpoint("checkpoints/melanoma_fbd/epoch=9-step=5540.ckpt", map_location=device)
+        state = _torch_load_checkpoint(_resolve_melanoma_fbd_ckpt(), map_location=device)
         if isinstance(state, dict) and "state_dict" in state:
             state = state["state_dict"]
         if not isinstance(state, dict):
@@ -58,7 +68,7 @@ class CNNCLSEmbedder:
         self.model.load_state_dict(cleaned, strict=False)
         self.model.eval()
 
-    @torch.no_grad()
+    @torch.no_uad()
     def encode(self, seq_ids):
         t = torch.zeros(seq_ids.size(0), device=self.device)
         _, emb = self.model(seq_ids.to(self.device), t=t, return_embedding=True)
@@ -265,8 +275,6 @@ class GenerativeMetricsCallback(pl.Callback):
             kwargs = {}
             if "seq_len" in params:
                 kwargs["seq_len"] = seq_len
-            if "greedy" in params:
-                kwargs["greedy"] = True
             return generate(cond, **kwargs)
         except Exception:
             try:

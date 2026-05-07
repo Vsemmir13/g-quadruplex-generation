@@ -273,5 +273,6 @@ class QuadDFMModule(LightningModule):
         sched = {
             "scheduler": ReduceLROnPlateau(opt, mode="min", patience=5),
             "monitor": "val_loss",
+            "strict": False,
         }
         return [opt], [sched]

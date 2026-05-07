@@ -1,5 +1,6 @@
 import os
 import argparse
+import inspect
 import torch
 import pytorch_lightning as pl
 import logging
@@ -16,8 +17,97 @@ from torch.utils.data import DataLoader
 from pytorch_lightning.loggers import TensorBoardLogger
 from sklearn.model_selection import train_test_split
 
+DEFAULTS = {
+    "ratio": 0.8,
+    "val_ratio": 0.1,
+    "check_val_every_n_epoch": 10,
+    "val_check_interval": None,
+    "limit_train_batches": 1.0,
+    "limit_val_batches": 1.0,
+    "strategy": None,
+    "seq_len": 512,
+    "num_cls": 3,
+    "level_offset": 4,
+    "hidden_dim": 256,
+    "num_cnn_stacks": 4,
+    "num_transformer_layers": 6,
+    "num_attention_heads": 4,
+    "transformer_ff_mult": 4,
+    "dropout": 0.0,
+    "lr": 5e-4,
+    "alpha_max": 8.0,
+    "alpha_scale": 2.0,
+    "fix_alpha": None,
+    "prior_pseudocount": 2.0,
+    "num_integration_steps": 100,
+    "flow_temp": 1.0,
+    "classifier_free_guidance": True,
+    "cond_drop_prob": 0.3,
+    "guidance_scale": 3.0,
+    "guidance_mode": "probability_addition",
+    "score_free_guidance": False,
+    "probability_addition": False,
+    "adaptive_prob_add": False,
+    "probability_tilt": False,
+    "vectorfield_addition": False,
+    "allow_nan_cfactor": True,
+    "val_metrics_sample_size": 256,
+    "g4hunter_window": 25,
+    "lstm_emb_dim": 128,
+    "lstm_level_dim": 16,
+    "lstm_hidden_dim": 512,
+    "lstm_num_layers": 2,
+    "lstm_mlp_layers": 1,
+    "lstm_dropout": 0.3,
+    "lstm_sample_temperature": 1.0,
+    "lstm_top_k": 0,
+    "vae_hidden_dim": 320,
+    "vae_latent_dim": 128,
+    "vae_num_res_blocks": 2,
+    "vae_dropout": 0.1,
+    "vae_sample_temperature": 0.8,
+    "vae_beta": 0.1,
+    "vae_beta_warmup_steps": 20000,
+    "log_dir": "logs/run_logs",
+    "log_level": "INFO",
+    "checkpoint_monitor": "val_perplexity",
+    "checkpoint_save_top_k": 5,
+    "devices": "auto",
+}
+
 def count_trainable_params(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def load_checkpoint_weights(model, ckpt_path):
+    if not ckpt_path:
+        raise ValueError("--ckpt_path is required for --run_mode test")
+    load_kwargs = {"map_location": "cpu"}
+    if "weights_only" in inspect.signature(torch.load).parameters:
+        load_kwargs["weights_only"] = False
+    checkpoint = torch.load(ckpt_path, **load_kwargs)
+    state_dict = checkpoint["state_dict"] if isinstance(checkpoint, dict) and "state_dict" in checkpoint else checkpoint
+    model.load_state_dict(state_dict, strict=True)
+    logging.info(f"Loaded checkpoint weights from {ckpt_path}")
+    return model
+
+def trainer_fit_kwargs(args):
+    if not args.ckpt_path:
+        return {}
+    logging.info(f"Resuming training from checkpoint {args.ckpt_path}")
+    return {"ckpt_path": args.ckpt_path}
+
+def apply_defaults(args):
+    for key, value in DEFAULTS.items():
+        if not hasattr(args, key):
+            setattr(args, key, value)
+    return args
+
+def apply_guidance_mode(args):
+    args.score_free_guidance = args.guidance_mode == "score_free"
+    args.probability_addition = args.guidance_mode == "probability_addition"
+    args.probability_tilt = args.guidance_mode == "probability_tilt"
+    args.vectorfield_addition = args.guidance_mode == "vectorfield_addition"
+    return args
 
 def setup_logging(args):
     if args.log_file:
@@ -48,85 +138,61 @@ def _val_check_interval(value):
         return int(value)
     return value
 
+def log_distributed_env():
+    keys = [
+        "CUDA_VISIBLE_DEVICES",
+        "LOCAL_RANK",
+        "RANK",
+        "WORLD_SIZE",
+        "SLURM_JOB_ID",
+        "SLURM_NTASKS",
+        "SLURM_NTASKS_PER_NODE",
+        "SLURM_PROCID",
+        "SLURM_LOCALID",
+        "SLURM_GPUS",
+    ]
+    env = {key: os.environ.get(key) for key in keys if os.environ.get(key) is not None}
+    logging.info(f"Distributed environment: {env}")
+    if torch.cuda.is_available():
+        logging.info(f"torch.cuda.device_count()={torch.cuda.device_count()}")
+
+def resolve_devices(args):
+    if args.devices == "auto":
+        return torch.cuda.device_count()
+    devices = int(args.devices)
+    if devices < 1:
+        raise ValueError("--devices must be a positive integer or 'auto'")
+    return devices
+
 def main():
     parser = argparse.ArgumentParser(description="Train and evaluate DNA sequence model")
     parser.add_argument("--experiment_name", type=str, required=True)
     parser.add_argument("--file_path_quadruplex", type=str, required=True)
     parser.add_argument("--file_path_seq", type=str, required=True)
-    parser.add_argument("--ratio", type=float, default=0.8, help="Ratio of data for training")
-    parser.add_argument("--val_ratio", type=float, default=0.1, help="Ratio of validation data")
-    parser.add_argument("--epochs", "--max_epochs", type=int, default=1)
-    parser.add_argument("--max_steps", type=int, default=-1)
-    parser.add_argument("--check_val_every_n_epoch", type=int, default=None)
-    parser.add_argument("--val_check_interval", type=float, default=None)
-    parser.add_argument("--limit_train_batches", type=float, default=1.0)
-    parser.add_argument("--limit_val_batches", type=float, default=1.0)
-    parser.add_argument("--batch_size", type=int, default=512)
+    parser.add_argument("--model_type", type=str, default="dfm", choices=["lstm", "vae", "dfm", "dfm_transformer"])
+    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--epochs", "--max_epochs", type=int, default=100000)
+    parser.add_argument("--max_steps", type=int, default=450000)
     parser.add_argument("--num_workers", type=int, default=0)
-    parser.add_argument("--strategy", type=str, default=None, help="Training strategy")
-    parser.add_argument("--model_type", type=str, default='lstm', choices=['lstm', 'vae', 'dfm', 'dfm_transformer'])
-
-    parser.add_argument("--seq_len", type=int, default=512)
-    parser.add_argument("--num_cls", type=int, default=3)
-    parser.add_argument("--level_offset", type=int, default=4)
-    parser.add_argument("--hidden_dim", type=int, default=256)
-    parser.add_argument("--num_cnn_stacks", type=int, default=2)
-    parser.add_argument("--num_transformer_layers", type=int, default=6)
-    parser.add_argument("--num_attention_heads", type=int, default=4)
-    parser.add_argument("--transformer_ff_mult", type=int, default=4)
-    parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--alpha_max", type=float, default=8.0)
-    parser.add_argument("--alpha_scale", type=float, default=2.0)
-    parser.add_argument("--fix_alpha", type=float, default=None)
-    parser.add_argument("--prior_pseudocount", type=float, default=2.0)
-    parser.add_argument("--num_integration_steps", type=int, default=64)
-    parser.add_argument("--flow_temp", type=float, default=1.0)
-    parser.add_argument("--classifier_free_guidance", "--cls_free_guidance", action="store_true")
-    parser.add_argument("--cond_drop_prob", "--cls_free_noclass_ratio", type=float, default=0.3)
-    parser.add_argument("--guidance_scale", type=float, default=0.5)
+    parser.add_argument("--devices", type=str, default=DEFAULTS["devices"])
+    parser.add_argument("--run_mode", type=str, default="train", choices=["train", "test"])
+    parser.add_argument("--ckpt_path", type=str, default=None)
+    parser.add_argument("--guidance_scale", type=float, default=DEFAULTS["guidance_scale"])
     parser.add_argument(
         "--guidance_mode",
         type=str,
-        default="score",
+        default=DEFAULTS["guidance_mode"],
         choices=["score", "score_free", "probability_addition", "probability_tilt", "vectorfield_addition", "logit"],
     )
-    parser.add_argument("--score_free_guidance", action="store_true")
-    parser.add_argument("--probability_addition", action="store_true")
-    parser.add_argument("--adaptive_prob_add", action="store_true")
-    parser.add_argument("--probability_tilt", action="store_true")
-    parser.add_argument("--vectorfield_addition", action="store_true")
-    parser.add_argument("--allow_nan_cfactor", action="store_true")
-
-    parser.add_argument("--val_metrics_sample_size", type=int, default=256)
-    parser.add_argument("--g4hunter_window", type=int, default=25)
-    parser.add_argument("--lstm_emb_dim", type=int, default=128)
-    parser.add_argument("--lstm_level_dim", type=int, default=16)
-    parser.add_argument("--lstm_hidden_dim", type=int, default=512)
-    parser.add_argument("--lstm_num_layers", type=int, default=2)
-    parser.add_argument("--lstm_mlp_layers", type=int, default=1)
-    parser.add_argument("--lstm_dropout", type=float, default=0.3)
-    parser.add_argument("--lstm_sample_temperature", type=float, default=1.0)
-    parser.add_argument("--lstm_top_k", type=int, default=0)
-    parser.add_argument("--vae_hidden_dim", type=int, default=320)
-    parser.add_argument("--vae_latent_dim", type=int, default=128)
-    parser.add_argument("--vae_num_res_blocks", type=int, default=2)
-    parser.add_argument("--vae_dropout", type=float, default=0.1)
-    parser.add_argument("--vae_sample_temperature", type=float, default=1.0)
-    parser.add_argument("--vae_beta", type=float, default=0.05)
-    parser.add_argument("--vae_beta_warmup_steps", type=int, default=5000)
-    parser.add_argument("--log_dir", type=str, default="logs/run_logs")
     parser.add_argument("--log_file", type=str, default=None)
-    parser.add_argument("--log_level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
     parser.add_argument("--log_to_console", action="store_true")
     parser.add_argument("--progress_bar", action="store_true")
-    parser.add_argument("--checkpoint_monitor", type=str, default=None)
-    parser.add_argument("--checkpoint_save_top_k", type=int, default=5)
 
-    args = parser.parse_args()
+    args = apply_guidance_mode(apply_defaults(parser.parse_args()))
     setup_logging(args)
-    if args.score_free_guidance and args.cond_drop_prob != 0:
-        raise ValueError("--score_free_guidance should be used with --cls_free_noclass_ratio 0")
+    log_distributed_env()
+    if args.run_mode == "test" and not args.ckpt_path:
+        raise ValueError("--ckpt_path is required for --run_mode test")
     if args.probability_tilt and args.score_free_guidance:
         raise ValueError("--probability_tilt and --score_free_guidance are mutually exclusive")
     if (
@@ -287,18 +353,8 @@ def main():
             allow_nan_cfactor=args.allow_nan_cfactor,
         )
     logging.info(f"Model trainable parameters: {count_trainable_params(model):,}")
-
-    logging.info("Init checkpoint callback...")
-    checkpoint_monitor = args.checkpoint_monitor
-    if checkpoint_monitor is None:
-        checkpoint_monitor = "val_perplexity"
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=os.environ.get("MODEL_DIR", f"checkpoints/{args.model_type}/{args.experiment_name}"),
-        save_top_k=args.checkpoint_save_top_k,
-        save_last=True,
-        monitor=checkpoint_monitor,
-        mode='min'
-    )
+    if args.run_mode == "test":
+        model = load_checkpoint_weights(model, args.ckpt_path)
 
     metrics_cb = GenerativeMetricsCallback(
         train_sequences=train_dataset.encoded_seqs,
@@ -311,9 +367,10 @@ def main():
     strategy = "auto"
     if torch.cuda.is_available():
         accelerator = "gpu"
-        available = torch.cuda.device_count()
-        devices = available
-        if devices and devices > 1:
+        devices = resolve_devices(args)
+        if devices > torch.cuda.device_count():
+            raise ValueError(f"--devices={devices} but torch sees only {torch.cuda.device_count()} CUDA device(s)")
+        if devices > 1:
             strategy = args.strategy or DDPStrategy(find_unused_parameters=False)
         else:
             strategy = "auto"
@@ -321,6 +378,18 @@ def main():
         accelerator = "mps"
     else:
         accelerator = "cpu"
+
+    callbacks = [metrics_cb]
+    if args.run_mode == "train":
+        logging.info("Init checkpoint callback...")
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=os.environ.get("MODEL_DIR", f"checkpoints/{args.model_type}/{args.experiment_name}"),
+            save_top_k=args.checkpoint_save_top_k,
+            save_last=True,
+            monitor=args.checkpoint_monitor,
+            mode='min'
+        )
+        callbacks.insert(0, checkpoint_callback)
 
     logging.info(f"Init trainer on accelerator={accelerator} devices={devices} strategy={strategy}...")
     trainer = pl.Trainer(
@@ -335,15 +404,18 @@ def main():
         limit_train_batches=args.limit_train_batches,
         limit_val_batches=args.limit_val_batches,
         enable_progress_bar=args.progress_bar,
-        callbacks=[checkpoint_callback, metrics_cb],
+        callbacks=callbacks,
         logger=TensorBoardLogger(f"logs/{args.model_type}/", name=f"{args.experiment_name}"),
         check_val_every_n_epoch=args.check_val_every_n_epoch,
         val_check_interval=_val_check_interval(args.val_check_interval),
     )
 
-    logging.info("Starting training...")
-    trainer.fit(model, train_loader, val_loader)
-    logging.info("Finish training...")
+    if args.run_mode == "train":
+        logging.info("Starting training...")
+        trainer.fit(model, train_loader, val_loader, **trainer_fit_kwargs(args))
+        logging.info("Finish training...")
+    else:
+        logging.info("Skipping training because run_mode=test")
 
     logging.info("Starting evaluation with Trainer...")
     results = trainer.test(model, dataloaders=test_loader)

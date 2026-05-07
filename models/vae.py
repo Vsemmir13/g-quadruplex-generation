@@ -48,7 +48,8 @@ class DNAConvVAE(LightningModule):
         self.sample_temperature = float(sample_temperature)
         self.cond_emb = nn.Embedding(num_cls, hidden_dim)
         self.enc_cond_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.dec_cond_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.dec_cond_proj = nn.Linear(hidden_dim, latent_dim)
+        self.latent_to_hidden = nn.Linear(latent_dim, hidden_dim * (self.seq_len // 4))
 
         self.encoder = nn.Sequential(
             nn.Conv1d(vocab_size, hidden_dim // 2, kernel_size=7, padding=3),
@@ -60,10 +61,9 @@ class DNAConvVAE(LightningModule):
             *[ConvResBlock(hidden_dim, dropout=dropout) for _ in range(num_res_blocks)],
         )
 
-        self.to_mu = nn.Conv1d(hidden_dim, latent_dim, kernel_size=1)
-        self.to_logvar = nn.Conv1d(hidden_dim, latent_dim, kernel_size=1)
+        self.to_mu = nn.Linear(hidden_dim, latent_dim)
+        self.to_logvar = nn.Linear(hidden_dim, latent_dim)
 
-        self.decoder_in = nn.Conv1d(latent_dim, hidden_dim, kernel_size=1)
         self.decoder_blocks = nn.Sequential(
             *[ConvResBlock(hidden_dim, dropout=dropout) for _ in range(num_res_blocks)],
         )
@@ -94,6 +94,7 @@ class DNAConvVAE(LightningModule):
         h = self.encoder(x)
         cond_emb = self._cond_embedding(cond)
         h = h + self.enc_cond_proj(cond_emb)[:, :, None]
+        h = h.mean(dim=-1)
         mu = self.to_mu(h)
         logvar = self.to_logvar(h)
         return mu, logvar
@@ -107,9 +108,10 @@ class DNAConvVAE(LightningModule):
         return mu + eps * std
 
     def decode(self, z, cond):
-        h = self.decoder_in(z)
         cond_emb = self._cond_embedding(cond)
-        h = h + self.dec_cond_proj(cond_emb)[:, :, None]
+        z = z + self.dec_cond_proj(cond_emb)
+        h = self.latent_to_hidden(z)
+        h = h.view(z.size(0), self.hparams.hidden_dim, self.seq_len // 4)
         h = self.decoder_blocks(h)
         logits = self.decoder(h)
         logits = logits.permute(0, 2, 1)
@@ -216,11 +218,10 @@ class DNAConvVAE(LightningModule):
             z = torch.randn(
                 cond.size(0),
                 self.hparams.latent_dim,
-                self.seq_len // 4,
                 device=cond.device,
             )
-        elif z.dim() == 2:
-            z = z[:, :, None].expand(-1, -1, self.seq_len // 4)
+        elif z.dim() == 3:
+            z = z.mean(dim=-1)
         logits = self.decode(z, cond)
         if greedy:
             return torch.argmax(logits, dim=-1)
@@ -233,5 +234,6 @@ class DNAConvVAE(LightningModule):
         sched = {
             "scheduler": ReduceLROnPlateau(opt, mode="min", patience=5),
             "monitor": "val_loss",
+            "strict": False,
         }
         return [opt], [sched]
