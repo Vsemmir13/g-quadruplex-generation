@@ -71,7 +71,9 @@ class DNAConvVAE(LightningModule):
             nn.ConvTranspose1d(hidden_dim, hidden_dim // 2, kernel_size=4, stride=2, padding=1),
             nn.SiLU(),
             ConvResBlock(hidden_dim // 2, dropout=dropout),
-            nn.ConvTranspose1d(hidden_dim // 2, hidden_dim // 4, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose1d(
+                hidden_dim // 2, hidden_dim // 4, kernel_size=4, stride=2, padding=1
+            ),
             nn.SiLU(),
             ConvResBlock(hidden_dim // 4, dropout=dropout),
             nn.Conv1d(hidden_dim // 4, hidden_dim // 4, kernel_size=3, padding=1),
@@ -124,12 +126,13 @@ class DNAConvVAE(LightningModule):
         return logits, mu, logvar
 
     def loss_fn(self, logits, targets, mu, logvar):
-        recon = F.cross_entropy(
-            logits.reshape(-1, self.vocab_size),
-            targets.reshape(-1)
-        )
+        recon = F.cross_entropy(logits.reshape(-1, self.vocab_size), targets.reshape(-1))
         kld = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).mean()
-        warm = min(1.0, float(self.global_step) / float(self.beta_warmup_steps)) if self.beta_warmup_steps else 1.0
+        warm = (
+            min(1.0, float(self.global_step) / float(self.beta_warmup_steps))
+            if self.beta_warmup_steps
+            else 1.0
+        )
         beta_eff = self.beta * warm
         return recon + beta_eff * kld, recon, kld
 
@@ -148,7 +151,7 @@ class DNAConvVAE(LightningModule):
             on_step=True,
             on_epoch=True,
             logger=True,
-            sync_dist=True
+            sync_dist=True,
         )
         return loss
 
@@ -167,7 +170,7 @@ class DNAConvVAE(LightningModule):
             on_step=False,
             on_epoch=True,
             logger=True,
-            sync_dist=True
+            sync_dist=True,
         )
 
     def test_step(self, batch, batch_idx):
@@ -195,7 +198,13 @@ class DNAConvVAE(LightningModule):
         if self.test_recons:
             avg_recon = torch.stack(self.test_recons).mean()
             self.log("avg_test_recon", avg_recon, logger=True, sync_dist=True)
-            self.log("avg_test_perplexity", torch.exp(avg_recon), prog_bar=True, logger=True, sync_dist=True)
+            self.log(
+                "avg_test_perplexity",
+                torch.exp(avg_recon),
+                prog_bar=True,
+                logger=True,
+                sync_dist=True,
+            )
         self.test_losses.clear()
         self.test_recons.clear()
 

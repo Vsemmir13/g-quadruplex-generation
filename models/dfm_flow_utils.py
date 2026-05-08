@@ -32,12 +32,14 @@ def sample_cond_prob_path(
     alpha_max: float = 8.0,
     fix_alpha: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    b, l = seq.shape
+    batch_size, seq_len = seq.shape
     seq_one_hot = F.one_hot(seq, num_classes=alphabet_size).float()
-    alphas = torch.from_numpy(1.0 + scipy.stats.expon().rvs(size=b).astype(np.float32) * float(alpha_scale)).to(seq.device)
+    alphas = torch.from_numpy(
+        1.0 + scipy.stats.expon().rvs(size=batch_size).astype(np.float32) * float(alpha_scale)
+    ).to(seq.device)
     if fix_alpha is not None:
-        alphas = torch.ones(b, device=seq.device, dtype=torch.float32) * float(fix_alpha)
-    alphas_ = torch.ones(b, l, alphabet_size, device=seq.device, dtype=torch.float32)
+        alphas = torch.ones(batch_size, device=seq.device, dtype=torch.float32) * float(fix_alpha)
+    alphas_ = torch.ones(batch_size, seq_len, alphabet_size, device=seq.device, dtype=torch.float32)
     alphas_ = alphas_ + seq_one_hot * (alphas[:, None, None] - 1)
     xt = torch.distributions.Dirichlet(alphas_).sample()
     return xt, alphas
@@ -62,7 +64,9 @@ class DirichletConditionalFlow:
         alpha_spacing: float = 0.01,
     ):
         self.k = k
-        self.alphas = np.arange(alpha_min, alpha_max + alpha_spacing, alpha_spacing, dtype=np.float64)
+        self.alphas = np.arange(
+            alpha_min, alpha_max + alpha_spacing, alpha_spacing, dtype=np.float64
+        )
         self.bs = np.linspace(0, 1, 1000, dtype=np.float64)
         self.beta_cdfs = []
         for alph in self.alphas:

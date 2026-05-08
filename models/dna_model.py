@@ -3,10 +3,12 @@ Adapted from https://github.com/HannesStark/dirichlet-flow-matching/tree/main/mo
 """
 
 import copy
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
+
 
 def count_params(model):
     return sum([p.numel() for p in model.parameters()])
@@ -42,7 +44,17 @@ class Dense(nn.Module):
 
 
 class CNNModel(nn.Module):
-    def __init__(self, vocab_size, hidden_dim, num_cnn_stacks,p_dropout,num_classes,classifier=False,clean_data=False,cls_free_guidance=False):
+    def __init__(
+        self,
+        vocab_size,
+        hidden_dim,
+        num_cnn_stacks,
+        p_dropout,
+        num_classes,
+        classifier=False,
+        clean_data=False,
+        cls_free_guidance=False,
+    ):
         super().__init__()
         self.alphabet_size = vocab_size
         self.num_cls = num_classes
@@ -53,9 +65,7 @@ class CNNModel(nn.Module):
         p_dropout = p_dropout
         self.clean_data = clean_data
         if self.clean_data:
-            self.linear = nn.Embedding(
-                self.alphabet_size, embedding_dim=hidden_dim
-            )
+            self.linear = nn.Embedding(self.alphabet_size, embedding_dim=hidden_dim)
         else:
             inp_size = self.alphabet_size
             self.linear = nn.Conv1d(inp_size, hidden_dim, kernel_size=9, padding=4)
@@ -73,18 +83,12 @@ class CNNModel(nn.Module):
             nn.Conv1d(hidden_dim, hidden_dim, kernel_size=9, dilation=64, padding=256),
         ]
         self.convs = nn.ModuleList(
-            [
-                copy.deepcopy(layer)
-                for layer in self.convs
-                for i in range(num_cnn_stacks)
-            ]
+            [copy.deepcopy(layer) for layer in self.convs for i in range(num_cnn_stacks)]
         )
         self.time_layers = nn.ModuleList(
             [Dense(hidden_dim, hidden_dim) for _ in range(self.num_layers)]
         )
-        self.norms = nn.ModuleList(
-            [nn.LayerNorm(hidden_dim) for _ in range(self.num_layers)]
-        )
+        self.norms = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_layers)])
         self.final_conv = nn.Sequential(
             nn.Conv1d(hidden_dim, hidden_dim, kernel_size=1),
             nn.ReLU(),
@@ -130,16 +134,13 @@ class CNNModel(nn.Module):
                 seq_encoded = seq
             else:
                 # Shape (B, D, S)
-                seq_encoded = F.one_hot(
-                    seq.long(), num_classes=self.alphabet_size
-                ).float()
+                seq_encoded = F.one_hot(seq.long(), num_classes=self.alphabet_size).float()
             time_emb = F.relu(self.time_embedder(t))
             feat = seq_encoded.permute(0, 2, 1)
             feat = F.relu(self.linear(feat))
 
         if self.cls_free_guidance and not self.classifier:
             cls_emb = self.cls_embedder(cls)
-
 
         # Input shape (B, S, D)
         for i in range(self.num_layers):
@@ -153,10 +154,7 @@ class CNNModel(nn.Module):
 
             h = self.norms[i]((h).permute(0, 2, 1))
             h = F.relu(self.convs[i](h.permute(0, 2, 1)))
-            if h.shape == feat.shape:
-                feat = h + feat
-            else:
-                feat = h
+            feat = h + feat if h.shape == feat.shape else h
 
         feat = self.final_conv(feat)
         feat = feat.permute(0, 2, 1)

@@ -59,7 +59,39 @@ class QuadDFMModule(LightningModule):
             guidance_mode = "probability_tilt"
         elif vectorfield_addition:
             guidance_mode = "vectorfield_addition"
-        self.save_hyperparameters()
+        self.save_hyperparameters(
+            {
+                "backbone": backbone,
+                "seq_len": seq_len,
+                "vocab_size": vocab_size,
+                "num_cls": num_cls,
+                "hidden_dim": hidden_dim,
+                "num_cnn_stacks": num_cnn_stacks,
+                "num_transformer_layers": num_transformer_layers,
+                "num_attention_heads": num_attention_heads,
+                "transformer_ff_mult": transformer_ff_mult,
+                "dropout": dropout,
+                "lr": lr,
+                "alpha_max": alpha_max,
+                "alpha_scale": alpha_scale,
+                "fix_alpha": fix_alpha,
+                "prior_pseudocount": prior_pseudocount,
+                "num_integration_steps": num_integration_steps,
+                "flow_temp": flow_temp,
+                "classifier_free_guidance": classifier_free_guidance,
+                "cond_drop_prob": cond_drop_prob,
+                "guidance_scale": guidance_scale,
+                "guidance_mode": guidance_mode,
+                "cls_free_guidance": cls_free_guidance,
+                "cls_free_noclass_ratio": cls_free_noclass_ratio,
+                "score_free_guidance": score_free_guidance,
+                "probability_addition": probability_addition,
+                "adaptive_prob_add": adaptive_prob_add,
+                "probability_tilt": probability_tilt,
+                "vectorfield_addition": vectorfield_addition,
+                "allow_nan_cfactor": allow_nan_cfactor,
+            }
+        )
         if backbone == "cnn":
             self.model = QuadCondCNN(
                 alphabet_size=vocab_size,
@@ -85,7 +117,9 @@ class QuadDFMModule(LightningModule):
             )
         else:
             raise ValueError(f"Unsupported DFM backbone: {backbone}")
-        self.condflow = DirichletConditionalFlow(k=vocab_size, alpha_max=alpha_max, alpha_spacing=0.001)
+        self.condflow = DirichletConditionalFlow(
+            k=vocab_size, alpha_max=alpha_max, alpha_spacing=0.001
+        )
         self.test_losses: list[torch.Tensor] = []
 
     def training_step(self, batch, batch_idx):
@@ -101,7 +135,7 @@ class QuadDFMModule(LightningModule):
             on_step=True,
             on_epoch=True,
             logger=True,
-            sync_dist=True
+            sync_dist=True,
         )
         return loss
 
@@ -118,7 +152,7 @@ class QuadDFMModule(LightningModule):
             on_step=False,
             on_epoch=True,
             logger=True,
-            sync_dist=True
+            sync_dist=True,
         )
 
     def test_step(self, batch, batch_idx):
@@ -126,7 +160,9 @@ class QuadDFMModule(LightningModule):
         loss, _ = self._step_loss(x, cond)
         self.test_losses.append(loss.detach())
         self.log("test_loss", loss, prog_bar=True, logger=True, sync_dist=True)
-        self.log("test_perplexity", torch.exp(loss.detach()), prog_bar=True, logger=True, sync_dist=True)
+        self.log(
+            "test_perplexity", torch.exp(loss.detach()), prog_bar=True, logger=True, sync_dist=True
+        )
 
     def on_test_epoch_end(self):
         if self.test_losses:
@@ -207,12 +243,17 @@ class QuadDFMModule(LightningModule):
             if bool(self.hparams.adaptive_prob_add):
                 potential_scales = probs_cond / (probs_cond - probs_uncond)
                 max_guide_scale = potential_scales.min(-1).values
-                flow_probs = probs_cond * (1 - max_guide_scale[..., None]) + probs_uncond * max_guide_scale[..., None]
+                flow_probs = (
+                    probs_cond * (1 - max_guide_scale[..., None])
+                    + probs_uncond * max_guide_scale[..., None]
+                )
             else:
                 flow_probs = probs_cond * scale + probs_uncond * (1 - scale)
         elif mode == "probability_tilt":
             eps = torch.finfo(probs_cond.dtype).tiny
-            flow_probs = probs_cond.clamp_min(eps) ** (1 - scale) * probs_uncond.clamp_min(eps) ** scale
+            flow_probs = (
+                probs_cond.clamp_min(eps) ** (1 - scale) * probs_uncond.clamp_min(eps) ** scale
+            )
             flow_probs = flow_probs / flow_probs.sum(-1, keepdim=True).clamp_min(eps)
         elif mode == "vectorfield_addition":
             flow_probs = probs_cond
@@ -231,12 +272,23 @@ class QuadDFMModule(LightningModule):
         k = int(self.hparams.vocab_size)
         xt = torch.distributions.Dirichlet(torch.ones(b, seq_len, k, device=self.device)).sample()
         eye = torch.eye(k, device=self.device)
-        t_span = torch.linspace(1.0, float(self.hparams.alpha_max), int(self.hparams.num_integration_steps), device=self.device)
-        for s, t in zip(t_span[:-1], t_span[1:]):
+        t_span = torch.linspace(
+            1.0,
+            float(self.hparams.alpha_max),
+            int(self.hparams.num_integration_steps),
+            device=self.device,
+        )
+        for s, t in zip(t_span[:-1], t_span[1:], strict=False):
             s_batch = s[None].expand(b)
             xt_exp, _ = expand_simplex(xt, s_batch, float(self.hparams.prior_pseudocount))
-            flow_probs, probs_cond, probs_uncond = self._guided_flow_probs(xt, xt_exp, s_batch, cond, guidance_scale=guidance_scale)
-            if (not torch.allclose(flow_probs.sum(-1), torch.ones_like(flow_probs[..., 0]), atol=1e-4)) or (flow_probs < 0).any():
+            flow_probs, probs_cond, probs_uncond = self._guided_flow_probs(
+                xt, xt_exp, s_batch, cond, guidance_scale=guidance_scale
+            )
+            if (
+                not torch.allclose(
+                    flow_probs.sum(-1), torch.ones_like(flow_probs[..., 0]), atol=1e-4
+                )
+            ) or (flow_probs < 0).any():
                 flow_probs = simplex_proj(flow_probs)
             c_factor = self.condflow.c_factor(xt.detach().cpu().numpy(), float(s.item()))
             c_factor = torch.from_numpy(c_factor).to(xt).float()
@@ -254,14 +306,18 @@ class QuadDFMModule(LightningModule):
                 and str(self.hparams.guidance_mode) == "vectorfield_addition"
                 and probs_uncond is not None
             ):
-                scale = float(self.hparams.guidance_scale if guidance_scale is None else guidance_scale)
+                scale = float(
+                    self.hparams.guidance_scale if guidance_scale is None else guidance_scale
+                )
                 flow_cond = (probs_cond.unsqueeze(-2) * cond_flows).sum(-1)
                 flow_uncond = (probs_uncond.unsqueeze(-2) * cond_flows).sum(-1)
                 flow = flow_cond * scale + flow_uncond * (1 - scale)
             else:
                 flow = (flow_probs.unsqueeze(-2) * cond_flows).sum(-1)
             xt = xt + flow * (t - s)
-            if (not torch.allclose(xt.sum(-1), torch.ones_like(xt[..., 0]), atol=1e-4)) or (xt < 0).any():
+            if (not torch.allclose(xt.sum(-1), torch.ones_like(xt[..., 0]), atol=1e-4)) or (
+                xt < 0
+            ).any():
                 xt = simplex_proj(xt)
         final_t = t_span[-1][None].expand(b)
         final_xt = expand_simplex(xt, final_t, float(self.hparams.prior_pseudocount))[0]

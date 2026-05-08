@@ -1,7 +1,8 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 from pytorch_lightning import LightningModule
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
@@ -57,12 +58,14 @@ class QuadLSTM(LightningModule):
             dropout=dropout if num_layers > 1 else 0.0,
         )
         self.out_norm = nn.LayerNorm(hidden_dim)
-        self.mlp_blocks = nn.Sequential(*[ResidualMLPBlock(hidden_dim, dropout=dropout) for _ in range(mlp_layers)])
+        self.mlp_blocks = nn.Sequential(
+            *[ResidualMLPBlock(hidden_dim, dropout=dropout) for _ in range(mlp_layers)]
+        )
         self.fc_out = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim * 2),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 2, vocab_size)
+            nn.Linear(hidden_dim * 2, vocab_size),
         )
         self.criterion = nn.CrossEntropyLoss(ignore_index=-100)
         self.test_losses = []
@@ -81,13 +84,21 @@ class QuadLSTM(LightningModule):
         return logits
 
     @torch.no_grad()
-    def generate(self, levels: torch.Tensor, seq_len: int, greedy=False, temperature=None, top_k=None) -> torch.Tensor:
+    def generate(
+        self, levels: torch.Tensor, seq_len: int, greedy=False, temperature=None, top_k=None
+    ) -> torch.Tensor:
         device = levels.device
         bsz = levels.size(0)
-        bos = torch.full((bsz, 1), 4, dtype=torch.long, device=device)
-        x = bos
+        level_emb = self.level_emb(levels.view(bsz).long()).unsqueeze(1)
+        token = torch.full((bsz, 1), 4, dtype=torch.long, device=device)
+        hidden = None
+        out_tokens = []
         for _ in range(int(seq_len)):
-            logits = self(x, levels)[:, -1, :4]
+            token_emb = self.emb(token)
+            inp = self.input_proj(torch.cat([token_emb, level_emb], dim=-1))
+            out, hidden = self.lstm(inp, hidden)
+            out = self.mlp_blocks(self.out_norm(out))
+            logits = self.fc_out(out)[:, -1, :4]
             if greedy:
                 next_token = torch.argmax(logits, dim=-1, keepdim=True)
             else:
@@ -100,8 +111,9 @@ class QuadLSTM(LightningModule):
                     logits = filtered.scatter(-1, indices, values)
                 probs = F.softmax(logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1)
-            x = torch.cat([x, next_token], dim=1)
-        return x[:, 1:]
+            out_tokens.append(next_token)
+            token = next_token
+        return torch.cat(out_tokens, dim=1)
 
     def training_step(self, batch, batch_idx):
         x, y, levels = batch
@@ -145,22 +157,30 @@ class QuadLSTM(LightningModule):
             "strict": False,
         }
         return [optimizer], [scheduler]
-    
+
     def test_step(self, batch, batch_idx):
         x, y, levels = batch
         logits = self(x, levels)
         loss = self.criterion(logits.view(-1, logits.size(-1)), y.view(-1))
-        self.log('test_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log(
+            "test_loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
         self.test_losses.append(loss.detach())
         return {"test_loss": loss}
 
     def on_test_epoch_end(self):
         avg_loss = torch.stack(self.test_losses).mean()
-        self.log('avg_test_loss', avg_loss, prog_bar=True, logger=True, sync_dist=True)
+        self.log("avg_test_loss", avg_loss, prog_bar=True, logger=True, sync_dist=True)
         perplexity = math.exp(avg_loss.item())
-        self.log('test_perplexity', perplexity, prog_bar=True, logger=True, sync_dist=True)
+        self.log("test_perplexity", perplexity, prog_bar=True, logger=True, sync_dist=True)
         self.test_losses.clear()
-        
+
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         x, y, levels = batch
         logits = self(x, levels)

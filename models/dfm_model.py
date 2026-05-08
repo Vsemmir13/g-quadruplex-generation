@@ -21,14 +21,14 @@ class QuadCondCNN(nn.Module):
     def __init__(
         self,
         *,
-        alphabet_size = 4,
-        num_cls = 3,
-        hidden_dim = 256,
-        num_cnn_stacks = 2,
-        dropout = 0.1,
-        expanded_simplex = True,
-        time_embed_scale = 30.0,
-        classifier_free_guidance = False,
+        alphabet_size=4,
+        num_cls=3,
+        hidden_dim=256,
+        num_cnn_stacks=2,
+        dropout=0.1,
+        expanded_simplex=True,
+        time_embed_scale=30.0,
+        classifier_free_guidance=False,
     ):
         super().__init__()
         self.alphabet_size = int(alphabet_size)
@@ -48,7 +48,9 @@ class QuadCondCNN(nn.Module):
             nn.Linear(self.hidden_dim, self.hidden_dim),
         )
         if self.classifier_free_guidance:
-            self.cls_embedder = nn.Embedding(num_embeddings=self.num_cls + 1, embedding_dim=self.hidden_dim)
+            self.cls_embedder = nn.Embedding(
+                num_embeddings=self.num_cls + 1, embedding_dim=self.hidden_dim
+            )
 
         base_convs = [
             nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=9, padding=4),
@@ -58,10 +60,16 @@ class QuadCondCNN(nn.Module):
             nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=9, dilation=64, padding=256),
         ]
         self.num_layers = len(base_convs) * self.num_cnn_stacks
-        self.convs = nn.ModuleList([copy.deepcopy(layer) for layer in base_convs for _ in range(self.num_cnn_stacks)])
-        self.time_layers = nn.ModuleList([Dense(self.hidden_dim, self.hidden_dim) for _ in range(self.num_layers)])
+        self.convs = nn.ModuleList(
+            [copy.deepcopy(layer) for layer in base_convs for _ in range(self.num_cnn_stacks)]
+        )
+        self.time_layers = nn.ModuleList(
+            [Dense(self.hidden_dim, self.hidden_dim) for _ in range(self.num_layers)]
+        )
         if self.classifier_free_guidance:
-            self.cls_layers = nn.ModuleList([Dense(self.hidden_dim, self.hidden_dim) for _ in range(self.num_layers)])
+            self.cls_layers = nn.ModuleList(
+                [Dense(self.hidden_dim, self.hidden_dim) for _ in range(self.num_layers)]
+            )
         self.norms = nn.ModuleList([nn.LayerNorm(self.hidden_dim) for _ in range(self.num_layers)])
         self.dropout = nn.Dropout(self.dropout_p)
 
@@ -75,12 +83,22 @@ class QuadCondCNN(nn.Module):
         if force_uncond:
             if not self.classifier_free_guidance:
                 raise ValueError("force_uncond=True requires classifier_free_guidance=True")
-            return torch.full((batch_size,), self.num_cls, device=self.cls_embedder.weight.device, dtype=torch.long)
+            return torch.full(
+                (batch_size,),
+                self.num_cls,
+                device=self.cls_embedder.weight.device,
+                dtype=torch.long,
+            )
 
         if cond is None:
             if not self.classifier_free_guidance:
                 raise ValueError("cond must be provided when classifier-free guidance is disabled")
-            cls = torch.full((batch_size,), self.num_cls, device=self.cls_embedder.weight.device, dtype=torch.long)
+            cls = torch.full(
+                (batch_size,),
+                self.num_cls,
+                device=self.cls_embedder.weight.device,
+                dtype=torch.long,
+            )
         else:
             cls = cond.to(self.cls_embedder.weight.device).view(batch_size)
             if torch.is_floating_point(cls):
@@ -102,7 +120,9 @@ class QuadCondCNN(nn.Module):
         # xt: [B, L, C] -> [B, C, L]
         time_emb = F.relu(self.time_embedder(t))
         if self.classifier_free_guidance:
-            cls = self._class_condition(cond, xt.size(0), cond_drop_mask=cond_drop_mask, force_uncond=force_uncond)
+            cls = self._class_condition(
+                cond, xt.size(0), cond_drop_mask=cond_drop_mask, force_uncond=force_uncond
+            )
             cls_emb = self.cls_embedder(cls)
 
         h = xt.permute(0, 2, 1)
@@ -126,12 +146,12 @@ class QuadCondTransformer(nn.Module):
         self,
         *,
         seq_len,
-        alphabet_size = 4,
-        num_cls = 3,
-        hidden_dim = 256,
-        num_layers = 6,
-        num_heads = 4,
-        ff_mult = 4,
+        alphabet_size=4,
+        num_cls=3,
+        hidden_dim=256,
+        num_layers=6,
+        num_heads=4,
+        ff_mult=4,
         dropout=0.1,
         expanded_simplex=True,
         time_embed_scale=30.0,
@@ -157,7 +177,9 @@ class QuadCondTransformer(nn.Module):
             nn.Linear(self.hidden_dim, self.hidden_dim),
         )
         if self.classifier_free_guidance:
-            self.cls_embedder = nn.Embedding(num_embeddings=self.num_cls + 1, embedding_dim=self.hidden_dim)
+            self.cls_embedder = nn.Embedding(
+                num_embeddings=self.num_cls + 1, embedding_dim=self.hidden_dim
+            )
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.hidden_dim,
@@ -177,12 +199,22 @@ class QuadCondTransformer(nn.Module):
         if force_uncond:
             if not self.classifier_free_guidance:
                 raise ValueError("force_uncond=True requires classifier_free_guidance=True")
-            return torch.full((batch_size,), self.num_cls, device=self.cls_embedder.weight.device, dtype=torch.long)
+            return torch.full(
+                (batch_size,),
+                self.num_cls,
+                device=self.cls_embedder.weight.device,
+                dtype=torch.long,
+            )
 
         if cond is None:
             if not self.classifier_free_guidance:
                 raise ValueError("cond must be provided when classifier-free guidance is disabled")
-            cls = torch.full((batch_size,), self.num_cls, device=self.cls_embedder.weight.device, dtype=torch.long)
+            cls = torch.full(
+                (batch_size,),
+                self.num_cls,
+                device=self.cls_embedder.weight.device,
+                dtype=torch.long,
+            )
         else:
             cls = cond.to(self.cls_embedder.weight.device).view(batch_size)
             if torch.is_floating_point(cls):
@@ -205,7 +237,9 @@ class QuadCondTransformer(nn.Module):
         time_embed = F.relu(self.time_embedder(t))
         feat = feat + time_embed[:, None, :]
         if self.classifier_free_guidance:
-            cls = self._class_condition(cond, xt.size(0), cond_drop_mask=cond_drop_mask, force_uncond=force_uncond)
+            cls = self._class_condition(
+                cond, xt.size(0), cond_drop_mask=cond_drop_mask, force_uncond=force_uncond
+            )
             feat = feat + self.cls_embedder(cls)[:, None, :]
         feat = self.transformer(feat)
         return self.out(feat)
