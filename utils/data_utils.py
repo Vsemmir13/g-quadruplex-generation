@@ -1,18 +1,20 @@
+import json
+import logging
+import os
+import random
+
 import pandas as pd
 import torch
-import random
-import logging
-import json
-import os
-from torch.utils.data import Dataset
 from pyfaidx import Fasta
+from torch.utils.data import Dataset
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-VOCAB = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
+VOCAB = {"A": 0, "C": 1, "G": 2, "T": 3}
 VOCAB_SIZE = len(VOCAB)
 ID2BASE = {v: k for k, v in VOCAB.items()}
 BOS_TOKEN_ID = VOCAB_SIZE
+
 
 def load_data(file_path_quadruplex):
     cols = ["chrom", "start", "end", "level_raw", "score", "strand"]
@@ -24,23 +26,25 @@ def load_data(file_path_quadruplex):
     df = df[df["level"] > 3]
     return df
 
+
 class QuadDataset(Dataset):
-    
-    def __init__(self, df, file_path_seq, typer="rec", seq_len=512):
+
+    def __init__(self, df, file_path_seq, typer="rec", seq_len=512, level_offset=4):
         self.file_path_seq = file_path_seq
         self.seq_len = seq_len
         self.genome = Fasta(file_path_seq)
-        self.typer = typer 
+        self.typer = typer
         assert self.typer in ["rec", "gen"]
+        self.level_offset = int(level_offset)
         self.encoded_seqs = []
         self.levels = []
         for _, row in df.iterrows():
-            seq = self.generate_full_sequence(row['start'], row['end'], row["chrom"])
+            seq = self.generate_full_sequence(row["start"], row["end"], row["chrom"])
             if seq is not None:
                 encoded_seq = self.encode_seq(seq)
                 self.encoded_seqs.append(encoded_seq)
                 self.levels.append(float(row["level"]))
-                
+
     def __len__(self):
         return len(self.encoded_seqs)
 
@@ -50,18 +54,18 @@ class QuadDataset(Dataset):
             ids.append(VOCAB[ch])
         return torch.tensor(ids, dtype=torch.long)
 
-    def generate_full_sequence(self, start, end, chrom):    
+    def generate_full_sequence(self, start, end, chrom):
         chrom_sequence = self.genome[chrom]
         min_start_pos = max(0, end - self.seq_len)
         max_start_pos = min(start, len(chrom_sequence) - self.seq_len)
         if max_start_pos < min_start_pos:
             return None
         start_pos = random.randint(min_start_pos, max_start_pos)
-        full_seq = chrom_sequence[start_pos:start_pos + self.seq_len].seq
-        if 'N' in full_seq:
+        full_seq = chrom_sequence[start_pos : start_pos + self.seq_len].seq
+        if "N" in full_seq:
             return None
         return full_seq
-    
+
     def __getitem__(self, idx):
         encoded_seq = self.encoded_seqs[idx]
         if self.typer == "rec":
@@ -72,11 +76,13 @@ class QuadDataset(Dataset):
             x = torch.cat([bos, encoded_seq[:-1]], dim=0)
             y = encoded_seq
         level = self.levels[idx]
-        level_norm = (level - 4.0) / 2.0
-        return x, y, torch.tensor([level_norm], dtype=torch.float32)
+        cond = torch.tensor(int(level) - self.level_offset, dtype=torch.long)
+        return x, y, cond
+
 
 def decode_seq(ids):
     return "".join(ID2BASE.get(int(i), "N") for i in ids)
+
 
 def save_examples(predictions, output_path, max_examples=20, *, compact: bool = False):
     output_dir = os.path.dirname(output_path)
@@ -94,13 +100,13 @@ def save_examples(predictions, output_path, max_examples=20, *, compact: bool = 
                 if compact:
                     row = {
                         "id": saved,
-                        "cond": float(cond[i].view(-1)[0].item()),
+                        "cond": int(cond[i].item()),
                         "generation_seq": decode_seq(gen[i].tolist()),
                     }
                 else:
                     row = {
                         "id": saved,
-                        "cond": cond[i].tolist(),
+                        "cond": int(cond[i].item()),
                         "test_x": x[i].tolist(),
                         "reconstruction": recon[i].tolist(),
                         "generation": gen[i].tolist(),
@@ -112,4 +118,3 @@ def save_examples(predictions, output_path, max_examples=20, *, compact: bool = 
                 saved += 1
                 if saved >= max_examples:
                     return
-

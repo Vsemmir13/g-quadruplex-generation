@@ -6,11 +6,10 @@ import torch
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Subset
 
-from utils.data_utils import QuadDataset, load_data
 from models.dfm_module import QuadDFMModule
 from models.lstm import QuadLSTM
 from models.vae import DNAConvVAE
-
+from utils.data_utils import QuadDataset, load_data
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -35,24 +34,48 @@ def main():
         return Subset(ds, list(range(n)))
 
     # --- LSTM (autoregressive) ---
-    lstm_train = small(QuadDataset(train_df, file_path_seq=args.file_path_seq, typer="gen", seq_len=args.seq_len))
-    lstm_val = small(QuadDataset(val_df, file_path_seq=args.file_path_seq, typer="gen", seq_len=args.seq_len))
-    lstm_train_loader = DataLoader(lstm_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
-    lstm_val_loader = DataLoader(lstm_val, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+    lstm_train = small(
+        QuadDataset(train_df, file_path_seq=args.file_path_seq, typer="gen", seq_len=args.seq_len)
+    )
+    lstm_val = small(
+        QuadDataset(val_df, file_path_seq=args.file_path_seq, typer="gen", seq_len=args.seq_len)
+    )
+    lstm_train_loader = DataLoader(
+        lstm_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers
+    )
+    lstm_val_loader = DataLoader(
+        lstm_val, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers
+    )
     lstm_model = QuadLSTM(vocab_size=5)
 
     # --- VAE (reconstruction) ---
-    vae_train = small(QuadDataset(train_df, file_path_seq=args.file_path_seq, typer="rec", seq_len=args.seq_len))
-    vae_val = small(QuadDataset(val_df, file_path_seq=args.file_path_seq, typer="rec", seq_len=args.seq_len))
-    vae_train_loader = DataLoader(vae_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
-    vae_val_loader = DataLoader(vae_val, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+    vae_train = small(
+        QuadDataset(train_df, file_path_seq=args.file_path_seq, typer="rec", seq_len=args.seq_len)
+    )
+    vae_val = small(
+        QuadDataset(val_df, file_path_seq=args.file_path_seq, typer="rec", seq_len=args.seq_len)
+    )
+    vae_train_loader = DataLoader(
+        vae_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers
+    )
+    vae_val_loader = DataLoader(
+        vae_val, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers
+    )
     vae_model = DNAConvVAE(seq_len=args.seq_len)
 
     # --- DFM (Dirichlet flow matching) ---
-    dfm_train = small(QuadDataset(train_df, file_path_seq=args.file_path_seq, typer="rec", seq_len=args.seq_len))
-    dfm_val = small(QuadDataset(val_df, file_path_seq=args.file_path_seq, typer="rec", seq_len=args.seq_len))
-    dfm_train_loader = DataLoader(dfm_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
-    dfm_val_loader = DataLoader(dfm_val, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+    dfm_train = small(
+        QuadDataset(train_df, file_path_seq=args.file_path_seq, typer="rec", seq_len=args.seq_len)
+    )
+    dfm_val = small(
+        QuadDataset(val_df, file_path_seq=args.file_path_seq, typer="rec", seq_len=args.seq_len)
+    )
+    dfm_train_loader = DataLoader(
+        dfm_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers
+    )
+    dfm_val_loader = DataLoader(
+        dfm_val, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers
+    )
     dfm_model = QuadDFMModule(seq_len=args.seq_len)
     dfm_transformer_model = QuadDFMModule(
         backbone="transformer",
@@ -62,7 +85,11 @@ def main():
         num_attention_heads=4,
     )
 
-    accelerator = "gpu" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+    accelerator = (
+        "gpu"
+        if torch.cuda.is_available()
+        else ("mps" if torch.backends.mps.is_available() else "cpu")
+    )
     trainer = pl.Trainer(
         accelerator=accelerator,
         devices=1,
@@ -90,4 +117,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
