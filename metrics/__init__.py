@@ -1,2 +1,0 @@
-"""Standalone metric evaluation entrypoints."""
-

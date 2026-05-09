@@ -1,4 +1,4 @@
 black
+matplotlib
 ruff
 pytest
-

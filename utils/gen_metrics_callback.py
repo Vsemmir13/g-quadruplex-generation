@@ -8,27 +8,19 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 
-from models.dna_model import CNNModel
+from models.melanoma_model import MelanomaCNNModel
+from utils.model_utils import torch_load
 
 DEFAULT_HYENADNA_MODEL = "LongSafari/hyenadna-tiny-1k-seqlen-hf"
 
 
-def _torch_load_checkpoint(path: str, map_location):
-    """Lightning checkpoints contain pickled objects (e.g. argparse.Namespace); PyTorch 2.6+ defaults weights_only=True."""
-    load_sig = inspect.signature(torch.load)
-    kwargs = {"map_location": map_location}
-    if "weights_only" in load_sig.parameters:
-        kwargs["weights_only"] = False
-    return torch.load(path, **kwargs)
-
-
-def _resolve_melanoma_fbd_ckpt():
+def _load_melanoma_fbd_checkpoint(map_location):
     rel_path = os.path.join("checkpoints", "melanoma_fbd", "epoch=9-step=5540.ckpt")
     project_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), rel_path)
     for path in (rel_path, project_path):
         if os.path.exists(path):
-            return path
-    return rel_path
+            return torch_load(path, map_location=map_location)
+    return torch_load(rel_path, map_location=map_location)
 
 
 def _frechet_distance(real_emb, gen_emb, eps=1e-6):
@@ -52,11 +44,11 @@ def _frechet_distance(real_emb, gen_emb, eps=1e-6):
     return max(fbd, 0.0)
 
 
-class RegulatoryCNNCleanEmbedder:
+class MelanomaEmbedder:
 
     def __init__(self, device):
         self.device = device
-        self.model = CNNModel(
+        self.model = MelanomaCNNModel(
             vocab_size=4,
             hidden_dim=128,
             num_cnn_stacks=4,
@@ -65,7 +57,7 @@ class RegulatoryCNNCleanEmbedder:
             classifier=True,
             clean_data=True,
         ).to(device)
-        state = _torch_load_checkpoint(_resolve_melanoma_fbd_ckpt(), map_location=device)
+        state = _load_melanoma_fbd_checkpoint(map_location=device)
         if isinstance(state, dict) and "state_dict" in state:
             state = state["state_dict"]
         if not isinstance(state, dict):
@@ -161,7 +153,7 @@ class GenerativeMetricsCallback(pl.Callback):
         self._g4hunter_window = int(g4hunter_window)
         self._last_val_batch = None
         self._last_test_batch = None
-        self._regulatory = None
+        self._melanoma = None
         self._hyenadna = None
         self._fb = None
         self._hyenadna_model_name = hyenadna_model_name or os.environ.get(
@@ -266,9 +258,9 @@ class GenerativeMetricsCallback(pl.Callback):
         # --- FBD metrics ---
         self._log_fbd(
             pl_module,
-            log_prefix + "regulatory_fbd",
-            "regulatory",
-            lambda: RegulatoryCNNCleanEmbedder(device),
+            log_prefix + "melanoma_fbd",
+            "melanoma",
+            lambda: MelanomaEmbedder(device),
             real,
             gen,
         )

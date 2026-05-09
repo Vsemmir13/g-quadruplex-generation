@@ -1,37 +1,35 @@
 import argparse
 import csv
-import inspect
 import json
 import logging
 import os
 import random
-from dataclasses import dataclass
 
 import numpy as np
 import torch
-from sklearn.model_selection import train_test_split
 
-from main import CFG, build_model
-from models.dfm_module import QuadDFMModule
-from models.lstm import QuadLSTM
-from models.vae import DNAConvVAE
-from utils.data_utils import QuadDataset, decode_seq, load_data
+from utils.config import CFG
+from utils.data_utils import QuadDataset, decode_seq, split_data
 from utils.gen_metrics_callback import (
     DEFAULT_HYENADNA_MODEL,
     GenerativeMetricsCallback,
     HyenaDNAEmbedder,
-    RegulatoryCNNCleanEmbedder,
+    MelanomaEmbedder,
     _frechet_distance,
 )
+from utils.logging_utils import setup_logging
+from utils.metric_utils import encode_sequences
+from utils.model_factory import build_model_from_checkpoint
+from utils.model_utils import count_trainable_params
 
 G4_THRESHOLD = 1.5
 
 
-@dataclass(frozen=True)
 class ModelSpec:
-    name: str
-    model_type: str
-    ckpt_path: str
+    def __init__(self, name, model_type, ckpt_path):
+        self.name = name
+        self.model_type = model_type
+        self.ckpt_path = ckpt_path
 
 
 def parse_args():
@@ -71,8 +69,8 @@ def parse_args():
     parser.add_argument(
         "--embedders",
         nargs="+",
-        default=["regulatory", "hyenadna"],
-        choices=["regulatory", "hyenadna"],
+        default=["melanoma", "hyenadna"],
+        choices=["melanoma", "hyenadna"],
     )
     parser.add_argument("--hyenadna_model", default=DEFAULT_HYENADNA_MODEL)
     parser.add_argument(
@@ -83,10 +81,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def setup_logging():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-
 def parse_model_spec(value):
     parts = value.split(":", 2)
     if len(parts) != 3:
@@ -95,79 +89,6 @@ def parse_model_spec(value):
     if model_type not in {"lstm", "vae", "dfm", "dfm_transformer"}:
         raise ValueError(f"Unsupported model type: {model_type}")
     return ModelSpec(name=name, model_type=model_type, ckpt_path=ckpt_path)
-
-
-def torch_load(path, map_location="cpu"):
-    kwargs = {"map_location": map_location}
-    if "weights_only" in inspect.signature(torch.load).parameters:
-        kwargs["weights_only"] = False
-    return torch.load(path, **kwargs)
-
-
-def checkpoint_hparams(ckpt):
-    if isinstance(ckpt, dict):
-        hparams = ckpt.get("hyper_parameters") or ckpt.get("hparams")
-        if hparams:
-            return dict(hparams)
-    return {}
-
-
-def checkpoint_state_dict(ckpt):
-    if isinstance(ckpt, dict) and "state_dict" in ckpt:
-        return ckpt["state_dict"]
-    return ckpt
-
-
-def instantiate_from_checkpoint(spec):
-    ckpt = torch_load(spec.ckpt_path, map_location="cpu")
-    hparams = checkpoint_hparams(ckpt)
-    state_dict = checkpoint_state_dict(ckpt)
-
-    if spec.model_type == "lstm":
-        allowed = inspect.signature(QuadLSTM).parameters
-        kwargs = {key: value for key, value in hparams.items() if key in allowed}
-        if not kwargs:
-            kwargs = dict(vocab_size=5, num_cls=CFG["num_cls"], lr=CFG["lr"], **CFG["lstm"])
-        model = QuadLSTM(**kwargs)
-    elif spec.model_type == "vae":
-        allowed = inspect.signature(DNAConvVAE).parameters
-        kwargs = {key: value for key, value in hparams.items() if key in allowed}
-        if not kwargs:
-            kwargs = dict(seq_len=CFG["seq_len"], num_cls=CFG["num_cls"], lr=CFG["lr"], **CFG["vae"])
-        model = DNAConvVAE(**kwargs)
-    else:
-        allowed = inspect.signature(QuadDFMModule).parameters
-        kwargs = {key: value for key, value in hparams.items() if key in allowed}
-        if not kwargs:
-            model_args = argparse.Namespace(
-                model_type=spec.model_type,
-                guidance_scale=3.0,
-                guidance_mode="probability_addition",
-            )
-            model = build_model(model_args)
-        else:
-            model = QuadDFMModule(**kwargs)
-
-    model.load_state_dict(state_dict, strict=True)
-    model.eval()
-    return model
-
-
-def split_data(path, seed):
-    df = load_data(path).sample(frac=1, random_state=seed).reset_index(drop=True)
-    train_df, rest_df = train_test_split(
-        df,
-        test_size=1.0 - CFG["split"],
-        stratify=df["level"],
-        random_state=seed,
-    )
-    test_df, val_df = train_test_split(
-        rest_df,
-        test_size=CFG["val_split"] / (1.0 - CFG["split"]),
-        stratify=rest_df["level"],
-        random_state=seed,
-    )
-    return {"train": train_df, "val": val_df, "test": test_df, "all": df}
 
 
 def sample_real_by_class(df, file_path_seq, levels, num_samples, seed, log_label="real"):
@@ -267,14 +188,6 @@ def generate_sequences(model, model_type, cond, seq_len, guidance_scale=None, ba
     return torch.cat(generated, dim=0)
 
 
-def encode_sequences(embedder, seq_ids, batch_size):
-    chunks = []
-    for start in range(0, seq_ids.size(0), batch_size):
-        end = min(start + batch_size, seq_ids.size(0))
-        chunks.append(embedder.encode(seq_ids[start:end]))
-    return np.concatenate(chunks, axis=0)
-
-
 def ids_to_seqs(seq_ids):
     return [GenerativeMetricsCallback._ids_to_seq(row) for row in seq_ids]
 
@@ -303,14 +216,10 @@ def novelty_metrics(gen_ids, train_all_set, train_class_set):
     }
 
 
-def count_trainable_params(model):
-    return sum(param.numel() for param in model.parameters() if param.requires_grad)
-
-
 def make_embedders(names, device, hyenadna_model, seq_len):
     embedders = {}
-    if "regulatory" in names:
-        embedders["regulatory"] = RegulatoryCNNCleanEmbedder(device)
+    if "melanoma" in names:
+        embedders["melanoma"] = MelanomaEmbedder(device)
     if "hyenadna" in names:
         embedders["hyenadna"] = HyenaDNAEmbedder(device, model_name=hyenadna_model, seq_len=seq_len)
     return embedders
@@ -404,7 +313,12 @@ def main():
     )
     logging.info("Using device=%s", device)
 
-    split_dfs = split_data(args.file_path_quadruplex, args.seed)
+    split_dfs = split_data(
+        args.file_path_quadruplex,
+        split=CFG["split"],
+        val_split=CFG["val_split"],
+        seed=args.seed,
+    )
     eval_df = split_dfs[args.split]
     train_df = split_dfs["train"] if args.split != "train" else split_dfs["train"]
 
@@ -434,7 +348,12 @@ def main():
     rows = []
     for spec in specs:
         logging.info("Loading model %s (%s)", spec.name, spec.model_type)
-        model = instantiate_from_checkpoint(spec).to(device)
+        fallback_args = argparse.Namespace(
+            model_type=spec.model_type,
+            guidance_scale=1.0,
+            guidance_mode="probability_addition",
+        )
+        model = build_model_from_checkpoint(spec.model_type, spec.ckpt_path, fallback_args).to(device)
         model.eval()
         params = count_trainable_params(model)
         jobs = generation_jobs_for_model(args, spec, model, device)

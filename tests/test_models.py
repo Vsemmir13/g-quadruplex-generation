@@ -3,13 +3,12 @@ import logging
 
 import pytorch_lightning as pl
 import torch
-from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Subset
 
 from models.dfm_module import QuadDFMModule
 from models.lstm import QuadLSTM
 from models.vae import DNAConvVAE
-from utils.data_utils import QuadDataset, load_data
+from utils.data_utils import QuadDataset, split_data
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -26,8 +25,9 @@ def main():
 
     pl.seed_everything(42, workers=True)
 
-    df = load_data(args.file_path_quadruplex).sample(frac=1, random_state=42).reset_index(drop=True)
-    train_df, val_df = train_test_split(df, test_size=0.2, stratify=df["level"], random_state=42)
+    split_dfs = split_data(args.file_path_quadruplex, split=0.8, val_split=0.1, seed=42)
+    train_df = split_dfs["train"]
+    val_df = split_dfs["val"]
 
     def small(ds):
         n = min(len(ds), args.max_items)

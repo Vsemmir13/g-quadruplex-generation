@@ -1,5 +1,4 @@
 import argparse
-import inspect
 import logging
 import os
 
@@ -8,62 +7,14 @@ import torch
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.strategies import DDPStrategy
-from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
-from models.dfm_module import QuadDFMModule
-from models.lstm import QuadLSTM
-from models.vae import DNAConvVAE
-from utils.data_utils import QuadDataset, load_data, save_examples
+from utils.config import CFG
+from utils.data_utils import QuadDataset, save_examples, split_data
 from utils.gen_metrics_callback import GenerativeMetricsCallback
-
-CFG = {
-    "seq_len": 512,
-    "num_cls": 3,
-    "level_offset": 4,
-    "split": 0.8,
-    "val_split": 0.1,
-    "lr": 5e-4,
-    "check_val_every_n_epoch": 10,
-    "metric_samples": 256,
-    "g4hunter_window": 25,
-    "checkpoint_save_top_k": 5,
-    "lstm": dict(
-        emb_dim=128,
-        level_dim=16,
-        hidden_dim=512,
-        num_layers=2,
-        mlp_layers=1,
-        dropout=0.3,
-        sample_temperature=1.0,
-        top_k=0,
-    ),
-    "vae": dict(
-        hidden_dim=320,
-        latent_dim=128,
-        num_res_blocks=2,
-        dropout=0.1,
-        sample_temperature=0.8,
-        beta=0.1,
-        beta_warmup_steps=20000,
-    ),
-    "dfm": dict(
-        hidden_dim=128,
-        num_cnn_stacks=4,
-        num_transformer_layers=1,
-        num_attention_heads=4,
-        transformer_ff_mult=1,
-        dropout=0.0,
-        alpha_max=8.0,
-        alpha_scale=2.0,
-        prior_pseudocount=2.0,
-        num_integration_steps=100,
-        flow_temp=1.0,
-        classifier_free_guidance=True,
-        cond_drop_prob=0.3,
-        allow_nan_cfactor=True,
-    ),
-}
+from utils.logging_utils import setup_logging
+from utils.model_factory import build_model
+from utils.model_utils import count_trainable_params, load_weights
 
 
 def parse_args():
@@ -102,34 +53,15 @@ def parse_args():
     return args
 
 
-def setup_logging():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        force=True,
-    )
-
-
-def split_data(path):
-    df = load_data(path).sample(frac=1, random_state=42).reset_index(drop=True)
-    train_df, rest_df = train_test_split(
-        df,
-        test_size=1.0 - CFG["split"],
-        stratify=df["level"],
-        random_state=42,
-    )
-    test_df, val_df = train_test_split(
-        rest_df,
-        test_size=CFG["val_split"] / (1.0 - CFG["split"]),
-        stratify=rest_df["level"],
-        random_state=42,
-    )
-    logging.info("Data size: train=%d val=%d test=%d", len(train_df), len(val_df), len(test_df))
-    return train_df, val_df, test_df
-
-
 def make_loaders(args):
     typer = "gen" if args.model_type == "lstm" else "rec"
+    split_dfs = split_data(
+        args.file_path_quadruplex,
+        split=CFG["split"],
+        val_split=CFG["val_split"],
+        seed=42,
+        log_sizes=True,
+    )
     datasets = [
         QuadDataset(
             df,
@@ -138,7 +70,7 @@ def make_loaders(args):
             seq_len=CFG["seq_len"],
             level_offset=CFG["level_offset"],
         )
-        for df in split_data(args.file_path_quadruplex)
+        for df in (split_dfs["train"], split_dfs["val"], split_dfs["test"])
     ]
     train_ds, val_ds, test_ds = datasets
     train_loader = DataLoader(
@@ -151,37 +83,6 @@ def make_loaders(args):
         test_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers
     )
     return train_ds, train_loader, val_loader, test_loader
-
-
-def build_model(args):
-    if args.model_type == "lstm":
-        return QuadLSTM(vocab_size=5, num_cls=CFG["num_cls"], lr=CFG["lr"], **CFG["lstm"])
-
-    if args.model_type == "vae":
-        return DNAConvVAE(
-            seq_len=CFG["seq_len"], num_cls=CFG["num_cls"], lr=CFG["lr"], **CFG["vae"]
-        )
-
-    return QuadDFMModule(
-        backbone="transformer" if args.model_type == "dfm_transformer" else "cnn",
-        seq_len=CFG["seq_len"],
-        vocab_size=4,
-        num_cls=CFG["num_cls"],
-        lr=CFG["lr"],
-        guidance_scale=args.guidance_scale,
-        guidance_mode=args.guidance_mode,
-        **CFG["dfm"],
-    )
-
-
-def load_weights(model, ckpt_path):
-    kwargs = {"map_location": "cpu"}
-    if "weights_only" in inspect.signature(torch.load).parameters:
-        kwargs["weights_only"] = False
-    ckpt = torch.load(ckpt_path, **kwargs)
-    state = ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
-    model.load_state_dict(state, strict=True)
-    logging.info("Loaded checkpoint weights from %s", ckpt_path)
 
 
 def accelerator_and_strategy(devices_arg):
@@ -273,10 +174,7 @@ def main():
     train_ds, train_loader, val_loader, test_loader = make_loaders(args)
 
     model = build_model(args)
-    logging.info(
-        "Model trainable parameters: %s",
-        f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}",
-    )
+    logging.info("Model trainable parameters: %s", f"{count_trainable_params(model):,}")
     if args.run_mode == "test":
         load_weights(model, args.ckpt_path)
 

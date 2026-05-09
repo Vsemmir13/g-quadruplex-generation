@@ -6,6 +6,7 @@ import random
 import pandas as pd
 import torch
 from pyfaidx import Fasta
+from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -25,6 +26,25 @@ def load_data(file_path_quadruplex):
     df = df[df["length"] <= max_quadruplex_length]
     df = df[df["level"] > 3]
     return df
+
+
+def split_data(file_path_quadruplex, split=0.8, val_split=0.1, seed=42, log_sizes=False):
+    df = load_data(file_path_quadruplex).sample(frac=1, random_state=seed).reset_index(drop=True)
+    train_df, rest_df = train_test_split(
+        df,
+        test_size=1.0 - split,
+        stratify=df["level"],
+        random_state=seed,
+    )
+    test_df, val_df = train_test_split(
+        rest_df,
+        test_size=val_split / (1.0 - split),
+        stratify=rest_df["level"],
+        random_state=seed,
+    )
+    if log_sizes:
+        logging.info("Data size: train=%d val=%d test=%d", len(train_df), len(val_df), len(test_df))
+    return {"train": train_df, "val": val_df, "test": test_df, "all": df}
 
 
 class QuadDataset(Dataset):
@@ -84,7 +104,7 @@ def decode_seq(ids):
     return "".join(ID2BASE.get(int(i), "N") for i in ids)
 
 
-def save_examples(predictions, output_path, max_examples=20, *, compact: bool = False):
+def save_examples(predictions, output_path, max_examples=20, *, compact=False):
     output_dir = os.path.dirname(output_path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)

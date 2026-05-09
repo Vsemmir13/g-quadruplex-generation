@@ -9,10 +9,10 @@ import tempfile
 from pathlib import Path
 
 import pandas as pd
-from sklearn.model_selection import train_test_split
 
-from main import CFG
-from utils.data_utils import QuadDataset, decode_seq, load_data
+from utils.config import CFG
+from utils.data_utils import QuadDataset, decode_seq, split_data
+from utils.logging_utils import setup_logging
 
 
 def parse_args():
@@ -34,27 +34,6 @@ def parse_args():
     parser.add_argument("--rscript", default="Rscript")
     parser.add_argument("--keep_per_sequence", action="store_true")
     return parser.parse_args()
-
-
-def setup_logging():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-
-def split_data(path, seed):
-    df = load_data(path).sample(frac=1, random_state=seed).reset_index(drop=True)
-    train_df, rest_df = train_test_split(
-        df,
-        test_size=1.0 - CFG["split"],
-        stratify=df["level"],
-        random_state=seed,
-    )
-    test_df, val_df = train_test_split(
-        rest_df,
-        test_size=CFG["val_split"] / (1.0 - CFG["split"]),
-        stratify=rest_df["level"],
-        random_state=seed,
-    )
-    return {"train": train_df, "val": val_df, "test": test_df, "all": df}
 
 
 def sample_real_sequences(df, file_path_seq, classes, num_real, seed):
@@ -187,7 +166,12 @@ def main():
     if output_csv is None:
         output_csv = str(Path(args.samples_root) / "pqsfinder_metrics.csv")
 
-    split_df = split_data(args.file_path_quadruplex, args.seed)[args.split]
+    split_df = split_data(
+        args.file_path_quadruplex,
+        split=CFG["split"],
+        val_split=CFG["val_split"],
+        seed=args.seed,
+    )[args.split]
     rows = sample_real_sequences(
         split_df,
         args.file_path_seq,

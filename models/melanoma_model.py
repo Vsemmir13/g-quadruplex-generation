@@ -43,7 +43,7 @@ class Dense(nn.Module):
         return self.dense(x)[...]
 
 
-class CNNModel(nn.Module):
+class MelanomaCNNModel(nn.Module):
     def __init__(
         self,
         vocab_size,

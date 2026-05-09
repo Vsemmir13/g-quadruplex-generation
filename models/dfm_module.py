@@ -32,19 +32,19 @@ class QuadDFMModule(LightningModule):
         fix_alpha=None,
         prior_pseudocount=2.0,
         num_integration_steps=64,
-        flow_temp: float = 1.0,
-        classifier_free_guidance: bool = False,
-        cond_drop_prob: float = 0.3,
-        guidance_scale: float = 0.5,
-        guidance_mode: str = "score",
-        cls_free_guidance: bool | None = None,
-        cls_free_noclass_ratio: float | None = None,
-        score_free_guidance: bool = False,
-        probability_addition: bool = False,
-        adaptive_prob_add: bool = False,
-        probability_tilt: bool = False,
-        vectorfield_addition: bool = False,
-        allow_nan_cfactor: bool = False,
+        flow_temp=1.0,
+        classifier_free_guidance=False,
+        cond_drop_prob=0.3,
+        guidance_scale=0.5,
+        guidance_mode="score",
+        cls_free_guidance=None,
+        cls_free_noclass_ratio=None,
+        score_free_guidance=False,
+        probability_addition=False,
+        adaptive_prob_add=False,
+        probability_tilt=False,
+        vectorfield_addition=False,
+        allow_nan_cfactor=False,
     ):
         super().__init__()
         if cls_free_guidance is not None:
@@ -120,7 +120,7 @@ class QuadDFMModule(LightningModule):
         self.condflow = DirichletConditionalFlow(
             k=vocab_size, alpha_max=alpha_max, alpha_spacing=0.001
         )
-        self.test_losses: list[torch.Tensor] = []
+        self.test_losses = []
 
     def training_step(self, batch, batch_idx):
         x, _, cond = batch

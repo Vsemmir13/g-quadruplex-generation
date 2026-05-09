@@ -84,9 +84,7 @@ class QuadLSTM(LightningModule):
         return logits
 
     @torch.no_grad()
-    def generate(
-        self, levels: torch.Tensor, seq_len: int, greedy=False, temperature=None, top_k=None
-    ) -> torch.Tensor:
+    def generate(self, levels, seq_len, greedy=False, temperature=None, top_k=None):
         device = levels.device
         bsz = levels.size(0)
         level_emb = self.level_emb(levels.view(bsz).long()).unsqueeze(1)

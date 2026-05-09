@@ -34,9 +34,32 @@ Dataset code: `utils/data_utils.py`.
 - Model condition ids: `0`, `1`, `2`, produced by `level - 4`
 - Windows containing `N` are discarded
 
+### Raw Dataset Analysis
+
+Raw BED intervals can be analyzed before `QuadDataset` creates 512bp training windows:
+
+```bash
+python analysis/dataset_analysis.py \
+  --bed data/EQ_hg38_lifted.bed \
+  --fasta data/hg38.fa \
+  --out_dir analysis/dataset
+```
+
+The script saves tables, a Markdown summary, example raw G4 sequences, and publication-style matplotlib figures:
+
+```text
+analysis/dataset/dataset_summary.md
+analysis/dataset/level_counts_comparison.png
+analysis/dataset/length_distribution_comparison.png
+analysis/dataset/length_hist_training_like_by_level.png
+analysis/dataset/length_by_level_boxplot.png
+analysis/dataset/sequence_features_by_level.png
+analysis/dataset/chrom_counts_top25_raw.png
+```
+
 ## Training
 
-The main entrypoint is `main.py`. Most hyperparameters are intentionally fixed in `CFG` inside `main.py`; command-line flags are kept short.
+The main entrypoint is `main.py`. Most hyperparameters are intentionally fixed in `CFG` inside `utils/config.py`; command-line flags are kept short.
 
 ### LSTM
 
@@ -144,7 +167,7 @@ python -m metrics.eval \
   --batch_size 512 \
   --guidance_modes probability_addition \
   --guidance_scales 0 1 2 3 \
-  --embedders regulatory hyenadna \
+  --embedders melanoma hyenadna \
   --output_dir generated/classwise_metrics
 ```
 
@@ -248,7 +271,7 @@ Real-vs-real baselines estimate metric noise by comparing two real subsets.
 
 | Embedder | Samples | Real-vs-real FBD |
 | --- | ---: | ---: |
-| regulatory CNN | `1024` | `0.8871` |
+| melanoma CNN | `1024` | `0.8871` |
 | HyenaDNA | `1024` | `0.0351` |
 
 ### Class Separability, Real Class-vs-Class FBD
@@ -257,12 +280,12 @@ Computed with `2000` real sequences per class.
 
 | Embedder | Pair | FBD |
 | --- | --- | ---: |
-| regulatory CNN | `4 vs 4` | `0.6512` |
-| regulatory CNN | `5 vs 5` | `0.5532` |
-| regulatory CNN | `6 vs 6` | `0.4976` |
-| regulatory CNN | `4 vs 5` | `18.8178` |
-| regulatory CNN | `4 vs 6` | `90.6959` |
-| regulatory CNN | `5 vs 6` | `32.6544` |
+| melanoma CNN | `4 vs 4` | `0.6512` |
+| melanoma CNN | `5 vs 5` | `0.5532` |
+| melanoma CNN | `6 vs 6` | `0.4976` |
+| melanoma CNN | `4 vs 5` | `18.8178` |
+| melanoma CNN | `4 vs 6` | `90.6959` |
+| melanoma CNN | `5 vs 6` | `32.6544` |
 | HyenaDNA | `4 vs 4` | `0.0332` |
 | HyenaDNA | `5 vs 5` | `0.0282` |
 | HyenaDNA | `6 vs 6` | `0.0435` |
@@ -276,7 +299,7 @@ This suggests that levels `5` and `6` are close in HyenaDNA space, while level `
 
 Older combined-set metrics are useful for a quick overview, but class-wise metrics should be preferred for final comparison.
 
-| Model | Params | Perplexity | Novelty | Regulatory FBD | HyenaDNA FBD |
+| Model | Params | Perplexity | Novelty | Melanoma FBD | HyenaDNA FBD |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | LSTM | `6.91M` | `3.1824` | `1.0000` | `4.2649` | `0.1111` |
 | DFM small | `3.66M` | `2.1920` | `1.0000` | `10.1020` | `0.3505` |
@@ -286,7 +309,7 @@ Older combined-set metrics are useful for a quick overview, but class-wise metri
 
 Combined-set sweep for `DFM large`.
 
-| Guidance scale | Regulatory FBD | HyenaDNA FBD |
+| Guidance scale | Melanoma FBD | HyenaDNA FBD |
 | ---: | ---: | ---: |
 | `0` | `2.3109` | `0.1007` |
 | `1` | `1.8686` | `0.0995` |
@@ -344,7 +367,7 @@ Current rule of thumb:
 
 - use `ruff` for import sorting and linting;
 - use `black` for formatting;
-- keep training defaults in `CFG` inside `main.py`;
+- keep training defaults in `CFG` inside `utils/config.py`;
 - keep metrics logic in `utils/gen_metrics_callback.py`;
 - use `python -m metrics.eval` for final class-wise metrics instead of combined-set FBD;
 - use `python -m metrics.pqsfinder` for PQS metrics on already generated JSONL files.
