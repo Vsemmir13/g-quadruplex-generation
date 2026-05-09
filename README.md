@@ -11,36 +11,17 @@ This repository contains code for conditional generation of short DNA sequences 
 | Model | Files | What it does |
 | --- | --- | --- |
 | DFM CNN | `models/dfm_module.py`, `models/dfm_model.py`, `models/dfm_flow_utils.py` | Dirichlet flow matching on the simplex with a residual CNN backbone. This is the paper-like DFM setup. |
-| DFM Transformer | `models/dfm_module.py`, `models/dfm_model.py` | Same DFM objective with a Transformer backbone. The paper-like Transformer is much smaller than the CNN. |
 | LSTM | `models/lstm.py` | Autoregressive next-token language model conditioned on categorical G4 level. |
 | VAE | `models/vae.py` | Conditional convolutional VAE trained by reconstruction loss plus KL warmup. |
-
-The DFM CNN default configuration matches the reference `dirichlet-flow-matching` setup used for enhancer experiments:
-
-| Setting | Value |
-| --- | --- |
-| `seq_len` | `512` |
-| `hidden_dim` | `128` |
-| `num_cnn_stacks` | `4` |
-| `dropout` | `0.0` |
-| `alpha_max` | `8.0` |
-| `alpha_scale` | `2.0` |
-| `prior_pseudocount` | `2.0` |
-| `num_integration_steps` | `100` |
-| `classifier_free_guidance` | `True` |
-| `cond_drop_prob` | `0.3` |
-| default `guidance_mode` | `probability_addition` |
-| default `guidance_scale` | `3.0` |
 
 Current trainable parameter counts:
 
 | Model | Parameters |
 | --- | ---: |
 | DFM CNN, paper-like | `3,660,676` |
-| DFM Transformer, paper-like | `118,532` |
 | DFM CNN large checkpoint | `14,595,844` |
 | LSTM | `6,909,909` |
-| VAE | `12,290,468` |
+| VAE | `17,656,612` |
 
 ## Dataset
 
@@ -104,23 +85,6 @@ python main.py \
   --progress_bar
 ```
 
-### DFM Transformer
-
-```bash
-python main.py \
-  --experiment_name g4_dfm_transformer \
-  --file_path_quadruplex data/EQ_hg38_lifted.bed \
-  --file_path_seq data/hg38.fa \
-  --model_type dfm_transformer \
-  --max_steps 450000 \
-  --max_epochs 100000 \
-  --batch_size 512 \
-  --num_workers 4 \
-  --guidance_mode probability_addition \
-  --guidance_scale 3 \
-  --progress_bar
-```
-
 ### Resume From Checkpoint
 
 ```bash
@@ -156,19 +120,28 @@ python main.py \
 
 Class-wise evaluation is preferred over one combined FBD because classes `4`, `5`, and `6` are not identical. Combined metrics can hide failures in one class.
 
-Use `classwise_metrics_eval.py` for metrics-only evaluation:
+Metric scripts live in `metrics/`:
+
+| File | Purpose |
+| --- | --- |
+| `metrics/eval.py` | Generates/reuses class-wise samples and computes FBD, G4Hunter gaps, and novelty. |
+| `metrics/pqsfinder.py` | Computes `pqsfinder` metrics for already generated JSONL samples. |
+| `metrics/pqsfinder_metrics.R` | Small R helper used by `metrics/pqsfinder.py`. |
+| `metrics/run_pqsfinder_metrics.sh` | Bash wrapper for `pqsfinder` metrics. |
+
+Use `metrics/eval.py` for metrics-only evaluation:
 
 ```bash
-python classwise_metrics_eval.py \
+python -m metrics.eval \
   --file_path_quadruplex data/EQ_hg38_lifted.bed \
   --file_path_seq data/hg38.fa \
-  --model lstm:lstm:checkpoints/lstm/g4_lstm/last.ckpt \
-  --model vae:vae:checkpoints/vae/g4_vae_change_warmup/last.ckpt \
-  --model dfm_small:dfm:checkpoints/dfm/g4_dfm_small/last.ckpt \
-  --model dfm_large:dfm:checkpoints/dfm/g4_dfm/last.ckpt \
+  --model lstm:lstm:checkpoints/lstm.ckpt \
+  --model vae:vae:checkpoints/vae.ckpt \
+  --model dfm:dfm:checkpoints/dfm.ckpt \
+  --model dfm_large:dfm:checkpoints/dfm_large.ckpt \
   --classes 4 5 6 \
-  --num_samples 1000 \
-  --batch_size 32 \
+  --num_samples 2000 \
+  --batch_size 512 \
   --guidance_modes probability_addition \
   --guidance_scales 0 1 2 3 \
   --embedders regulatory hyenadna \
@@ -194,14 +167,80 @@ The CSV contains:
 | `g4_real_frac` | Fraction of real sequences above G4 threshold |
 | `g4_gen_frac` | Fraction of generated sequences above G4 threshold |
 | `g4_frac_gap` | Absolute gap between real and generated G4-positive fractions |
-| `novelty_all_train` | Fraction of generated sequences absent from sampled train sequences |
-| `novelty_class_train` | Fraction of generated sequences absent from sampled train sequences of the same class |
+| `novelty_all_train` | Fraction of generated sequences absent from the full train set |
+| `novelty_class_train` | Fraction of generated sequences absent from the full train set of the same class |
 
 Existing sample files are reused by default. Add `--overwrite` only when samples should be regenerated.
 
-## Current Results
+### pqsfinder Metrics
 
-These are current validation-style measurements from local experiments. They should be treated as working results, not final thesis numbers.
+`pqsfinder` is computed after generation from existing JSONL files. It does not regenerate sequences.
+
+This requires R and the Bioconductor packages `pqsfinder` and `Biostrings`.
+
+Install R packages:
+
+```r
+install.packages("BiocManager")
+BiocManager::install(c("pqsfinder", "Biostrings"))
+```
+
+Run on existing generated samples:
+
+```bash
+python -m metrics.pqsfinder \
+  --samples_root generated/classwise_metrics/val \
+  --file_path_quadruplex data/EQ_hg38_lifted.bed \
+  --file_path_seq data/hg38.fa \
+  --output_csv generated/classwise_metrics/val/pqsfinder_metrics.csv \
+  --split val \
+  --classes 4 5 6 \
+  --num_real 2000 \
+  --min_score 42 \
+  --strand "*"
+```
+
+To compute one specific CFG strategy only, use `--sample_glob`:
+
+```bash
+python -m metrics.pqsfinder \
+  --samples_root generated/metrics_no_large/test/dfm_small \
+  --sample_glob cfg_vectorfield_addition_scale_1p0.jsonl \
+  --file_path_quadruplex data/EQ_hg38_lifted.bed \
+  --file_path_seq data/hg38.fa \
+  --output_csv generated/metrics_no_large/test/dfm_small/pqsfinder_vectorfield_addition_scale_1p0.csv \
+  --split test \
+  --classes 4 5 6 \
+  --num_real 2000 \
+  --min_score 42 \
+  --strand "*"
+```
+
+Shortcut:
+
+```bash
+./metrics/run_pqsfinder_metrics.sh
+```
+
+Outputs:
+
+```text
+pqsfinder_metrics.csv              # generated-vs-real class-wise PQS gaps
+pqsfinder_metrics_summary_all.csv  # real and generated PQS summaries
+pqsfinder_metrics_per_sequence.csv # optional, with --keep_per_sequence
+```
+
+Main `pqsfinder` columns:
+
+| Metric | Meaning |
+| --- | --- |
+| `pqs_frac` | Fraction of sequences with at least one predicted PQS hit |
+| `pqs_count_mean` | Mean number of PQS hits per sequence |
+| `pqs_max_score_mean` | Mean of the maximum pqsfinder score per sequence |
+| `pqs_total_score_mean` | Mean sum of pqsfinder scores per sequence |
+| `*_gap` | Absolute difference between generated and real sequences of the same class |
+
+## Results
 
 ### Real-vs-Real FBD Baselines
 
@@ -268,6 +307,15 @@ In this run, `guidance_scale=2` was best by both FBD metrics.
 | DFM large | scale 3 | `2.0666` | `2.0519` | `0.0148` | `0.4298` | `0.9551` | `0.9336` | `0.0215` |
 | VAE | sample | `2.0666` | `1.8780` | `0.1886` | `0.4374` | `0.9551` | `0.8477` | `0.1074` |
 
+### pqsfinder Snapshot
+
+Computed on the test split with `2000` generated sequences per class and `min_score=42`.
+
+| Model | Generation | Mean PQS frac gap | Mean PQS count gap | Mean max score gap | Mean total score gap |
+| --- | --- | ---: | ---: | ---: | ---: |
+| LSTM | sample | `0.0082` | `0.2668` | `1.4452` | `22.7240` |
+| DFM small | vectorfield addition, scale 1 | `0.0060` | `0.1003` | `1.2583` | `8.0308` |
+
 ## Code Style
 
 Style configuration lives in `pyproject.toml`.
@@ -298,4 +346,5 @@ Current rule of thumb:
 - use `black` for formatting;
 - keep training defaults in `CFG` inside `main.py`;
 - keep metrics logic in `utils/gen_metrics_callback.py`;
-- use `classwise_metrics_eval.py` for final metrics instead of combined-set FBD.
+- use `python -m metrics.eval` for final class-wise metrics instead of combined-set FBD;
+- use `python -m metrics.pqsfinder` for PQS metrics on already generated JSONL files.
