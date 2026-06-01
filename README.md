@@ -11,6 +11,7 @@ This repository contains code for conditional generation of short DNA sequences 
 | Model | Files | What it does |
 | --- | --- | --- |
 | DFM CNN | `models/dfm_module.py`, `models/dfm_model.py`, `models/dfm_flow_utils.py` | Dirichlet flow matching on the simplex with a residual CNN backbone. This is the paper-like DFM setup. |
+| DFM CNN large | `models/dfm_module.py`, `models/dfm_model.py`, `models/dfm_flow_utils.py` | Larger DFM CNN checkpoint used to test whether extra capacity improves generation quality. |
 | LSTM | `models/lstm.py` | Autoregressive next-token language model conditioned on categorical G4 level. |
 | VAE | `models/vae.py` | Conditional convolutional VAE trained by reconstruction loss plus KL warmup. |
 
@@ -33,29 +34,6 @@ Dataset code: `utils/data_utils.py`.
 - Classes: raw G4 levels `4`, `5`, `6`
 - Model condition ids: `0`, `1`, `2`, produced by `level - 4`
 - Windows containing `N` are discarded
-
-### Raw Dataset Analysis
-
-Raw BED intervals can be analyzed before `QuadDataset` creates 512bp training windows:
-
-```bash
-python analysis/dataset_analysis.py \
-  --bed data/EQ_hg38_lifted.bed \
-  --fasta data/hg38.fa \
-  --out_dir analysis/dataset
-```
-
-The script saves tables, a Markdown summary, example raw G4 sequences, and publication-style matplotlib figures:
-
-```text
-analysis/dataset/dataset_summary.md
-analysis/dataset/level_counts_comparison.png
-analysis/dataset/length_distribution_comparison.png
-analysis/dataset/length_hist_training_like_by_level.png
-analysis/dataset/length_by_level_boxplot.png
-analysis/dataset/sequence_features_by_level.png
-analysis/dataset/chrom_counts_top25_raw.png
-```
 
 ## Training
 
@@ -195,97 +173,44 @@ The CSV contains:
 
 Existing sample files are reused by default. Add `--overwrite` only when samples should be regenerated.
 
-### pqsfinder Metrics
+### Dataset Motif Summary
 
-`pqsfinder` is computed after generation from existing JSONL files. It does not regenerate sequences.
+The raw EndoQuad intervals contain many G-rich motifs, but not every peak matches a simple canonical motif. This supports using learned generative models and external biological metrics instead of only rule-based pattern matching.
 
-This requires R and the Bioconductor packages `pqsfinder` and `Biostrings`.
+| Subset | Valid peaks | Any G-rich motif | Percent |
+| --- | ---: | ---: | ---: |
+| All EndoQuad levels `1-6` | `391,355` | `193,819` | `49.53%` |
+| High-confidence levels `4-6` | `140,262` | `70,532` | `50.29%` |
 
-Install R packages:
+G-rich motif prevalence by pattern:
 
-```r
-install.packages("BiocManager")
-BiocManager::install(c("pqsfinder", "Biostrings"))
-```
+| Subset | Canonical `(G3+N1-7)x4` | Long-loop `(G3+N1-12)x4` | 3-tetrad `(G3+N1-7)x3` | G2-motif `(G2+N1-12)x4` |
+| --- | ---: | ---: | ---: | ---: |
+| All levels `1-6` | `5.63%` | `11.22%` | `20.92%` | `48.60%` |
+| Levels `4-6` | `6.62%` | `12.82%` | `22.44%` | `49.40%` |
 
-Run on existing generated samples:
+### Real Reference Metrics
 
-```bash
-python -m metrics.pqsfinder \
-  --samples_root generated/classwise_metrics/val \
-  --file_path_quadruplex data/EQ_hg38_lifted.bed \
-  --file_path_seq data/hg38.fa \
-  --output_csv generated/classwise_metrics/val/pqsfinder_metrics.csv \
-  --split val \
-  --classes 4 5 6 \
-  --num_real 2000 \
-  --min_score 42 \
-  --strand "*"
-```
+These values are computed on real test sequences and provide the target biological distribution for generated samples.
 
-To compute one specific CFG strategy only, use `--sample_glob`:
+| Class | Mean G4Hunter | G4Hunter-positive fraction | Mean strongest PQS score | Mean total PQS score |
+| ---: | ---: | ---: | ---: | ---: |
+| `4` | `2.0313` | `0.9350` | `86.5130` | `307.7075` |
+| `5` | `2.0705` | `0.9505` | `89.4345` | `337.4195` |
+| `6` | `2.1316` | `0.9550` | `92.5465` | `351.3410` |
 
-```bash
-python -m metrics.pqsfinder \
-  --samples_root generated/metrics_no_large/test/dfm_small \
-  --sample_glob cfg_vectorfield_addition_scale_1p0.jsonl \
-  --file_path_quadruplex data/EQ_hg38_lifted.bed \
-  --file_path_seq data/hg38.fa \
-  --output_csv generated/metrics_no_large/test/dfm_small/pqsfinder_vectorfield_addition_scale_1p0.csv \
-  --split test \
-  --classes 4 5 6 \
-  --num_real 2000 \
-  --min_score 42 \
-  --strand "*"
-```
+### Real Class Separability
 
-Shortcut:
-
-```bash
-./metrics/run_pqsfinder_metrics.sh
-```
-
-Outputs:
-
-```text
-pqsfinder_metrics.csv              # generated-vs-real class-wise PQS gaps
-pqsfinder_metrics_summary_all.csv  # real and generated PQS summaries
-pqsfinder_metrics_per_sequence.csv # optional, with --keep_per_sequence
-```
-
-Main `pqsfinder` columns:
-
-| Metric | Meaning |
-| --- | --- |
-| `pqs_frac` | Fraction of sequences with at least one predicted PQS hit |
-| `pqs_count_mean` | Mean number of PQS hits per sequence |
-| `pqs_max_score_mean` | Mean of the maximum pqsfinder score per sequence |
-| `pqs_total_score_mean` | Mean sum of pqsfinder scores per sequence |
-| `*_gap` | Absolute difference between generated and real sequences of the same class |
-
-## Results
-
-### Real-vs-Real FBD Baselines
-
-Real-vs-real baselines estimate metric noise by comparing two real subsets.
-
-| Embedder | Samples | Real-vs-real FBD |
-| --- | ---: | ---: |
-| melanoma CNN | `1024` | `0.8871` |
-| HyenaDNA | `1024` | `0.0351` |
-
-### Class Separability, Real Class-vs-Class FBD
-
-Computed with `2000` real sequences per class.
+Computed with `2000` real sequences per class. Within-class rows are split-half baselines and estimate metric noise.
 
 | Embedder | Pair | FBD |
 | --- | --- | ---: |
-| melanoma CNN | `4 vs 4` | `0.6512` |
-| melanoma CNN | `5 vs 5` | `0.5532` |
-| melanoma CNN | `6 vs 6` | `0.4976` |
-| melanoma CNN | `4 vs 5` | `18.8178` |
-| melanoma CNN | `4 vs 6` | `90.6959` |
-| melanoma CNN | `5 vs 6` | `32.6544` |
+| Melanoma CNN | `4 vs 4` | `0.6512` |
+| Melanoma CNN | `5 vs 5` | `0.5532` |
+| Melanoma CNN | `6 vs 6` | `0.4976` |
+| Melanoma CNN | `4 vs 5` | `18.8178` |
+| Melanoma CNN | `4 vs 6` | `90.6959` |
+| Melanoma CNN | `5 vs 6` | `32.6544` |
 | HyenaDNA | `4 vs 4` | `0.0332` |
 | HyenaDNA | `5 vs 5` | `0.0282` |
 | HyenaDNA | `6 vs 6` | `0.0435` |
@@ -293,51 +218,44 @@ Computed with `2000` real sequences per class.
 | HyenaDNA | `4 vs 6` | `0.5686` |
 | HyenaDNA | `5 vs 6` | `0.1018` |
 
-This suggests that levels `5` and `6` are close in HyenaDNA space, while level `4` is more separated.
+### Final Model Ranking, Averaged Over Classes
 
-### Combined-Set Model Metrics
+Lower FBD and lower G4Hunter difference are better. For PQS metrics, generated values should be close to the real reference values above.
 
-Older combined-set metrics are useful for a quick overview, but class-wise metrics should be preferred for final comparison.
+| Model | Params | HyenaDNA FBD | Melanoma FBD | Mean abs G4Hunter diff | Generated G4Hunter-positive fraction | Generated strongest PQS | Generated total PQS | Generated PQS-hit fraction |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| DFM large | `14.60M` | `0.1354` | `4.4116` | `0.4383` | `0.9498` | `91.1372` | `332.4100` | `0.9940` |
+| DFM | `3.66M` | `0.1443` | `5.0500` | `0.4426` | `0.9445` | `90.7563` | `325.0592` | `0.9940` |
+| LSTM | `6.91M` | `0.1531` | `6.3351` | `0.4597` | `0.9345` | `90.1555` | `351.3303` | `0.9918` |
+| VAE | `17.66M` | `1.0950` | `75.5344` | `0.4533` | `0.8558` | `84.1975` | `279.0998` | `0.9938` |
 
-| Model | Params | Perplexity | Novelty | Melanoma FBD | HyenaDNA FBD |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| LSTM | `6.91M` | `3.1824` | `1.0000` | `4.2649` | `0.1111` |
-| DFM small | `3.66M` | `2.1920` | `1.0000` | `10.1020` | `0.3505` |
-| VAE | `17.66M` | `3.5323` | `1.0000` | `81.3965` | `1.0761` |
+### Final Model Metrics By Class
 
-### DFM Large Guidance Sweep
+| Class | Model | HyenaDNA FBD | Melanoma FBD | Generated mean G4Hunter | Generated G4Hunter-positive fraction | Generated strongest PQS | Generated total PQS | Novelty vs full train |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `4` | LSTM | `0.1366` | `1.5226` | `2.0128` | `0.9245` | `85.3315` | `302.3830` | `1.0000` |
+| `4` | VAE | `1.3459` | `140.9224` | `1.7913` | `0.7755` | `76.2700` | `215.7030` | `1.0000` |
+| `4` | DFM | `0.2910` | `2.0067` | `2.0408` | `0.9395` | `87.4260` | `298.1825` | `1.0000` |
+| `4` | DFM large | `0.2655` | `1.2527` | `2.0536` | `0.9370` | `88.0250` | `306.4280` | `1.0000` |
+| `5` | LSTM | `0.1391` | `4.0459` | `2.0940` | `0.9380` | `91.1980` | `359.6030` | `1.0000` |
+| `5` | VAE | `1.0385` | `61.3385` | `1.9246` | `0.8855` | `86.3080` | `298.8590` | `1.0000` |
+| `5` | DFM | `0.0617` | `1.9495` | `2.0987` | `0.9460` | `91.9370` | `338.8205` | `1.0000` |
+| `5` | DFM large | `0.0632` | `1.6290` | `2.0984` | `0.9555` | `92.2470` | `344.1325` | `1.0000` |
+| `6` | LSTM | `0.1835` | `13.4367` | `2.1612` | `0.9410` | `93.9370` | `392.0050` | `1.0000` |
+| `6` | VAE | `0.9006` | `24.3421` | `1.9679` | `0.9065` | `90.0145` | `322.7375` | `1.0000` |
+| `6` | DFM | `0.0803` | `11.1936` | `2.1231` | `0.9480` | `92.9060` | `338.1745` | `1.0000` |
+| `6` | DFM large | `0.0774` | `10.3532` | `2.1436` | `0.9570` | `93.1395` | `346.6695` | `1.0000` |
 
-Combined-set sweep for `DFM large`.
+### Best CFG Settings
 
-| Guidance scale | Melanoma FBD | HyenaDNA FBD |
-| ---: | ---: | ---: |
-| `0` | `2.3109` | `0.1007` |
-| `1` | `1.8686` | `0.0995` |
-| `2` | `1.3702` | `0.0965` |
-| `3` | `2.1867` | `0.1049` |
+The best DFM settings were selected by averaging over classes and considering HyenaDNA FBD together with PQS score preservation.
 
-In this run, `guidance_scale=2` was best by both FBD metrics.
-
-### G4 Metrics Snapshot
-
-| Model | Generation | G4 real mean | G4 gen mean | G4 mean gap | G4 paired gap | G4 real frac | G4 gen frac | G4 frac gap |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| LSTM | sample | `2.0579` | `2.0468` | `0.0111` | `0.4505` | `0.9492` | `0.9219` | `0.0273` |
-| DFM small | scale 3 | `2.0666` | `2.0592` | `0.0074` | `0.4544` | `0.9551` | `0.9180` | `0.0371` |
-| DFM large | scale 0 | `2.0666` | `2.0564` | `0.0102` | `0.4313` | `0.9551` | `0.9346` | `0.0205` |
-| DFM large | scale 1 | `2.0666` | `2.0571` | `0.0095` | `0.4355` | `0.9551` | `0.9355` | `0.0195` |
-| DFM large | scale 2 | `2.0666` | `2.0564` | `0.0102` | `0.4324` | `0.9551` | `0.9346` | `0.0205` |
-| DFM large | scale 3 | `2.0666` | `2.0519` | `0.0148` | `0.4298` | `0.9551` | `0.9336` | `0.0215` |
-| VAE | sample | `2.0666` | `1.8780` | `0.1886` | `0.4374` | `0.9551` | `0.8477` | `0.1074` |
-
-### pqsfinder Snapshot
-
-Computed on the test split with `2000` generated sequences per class and `min_score=42`.
-
-| Model | Generation | Mean PQS frac gap | Mean PQS count gap | Mean max score gap | Mean total score gap |
+| Model | Guidance mode | Guidance scale | Mean HyenaDNA FBD | Mean strongest PQS score | Mean PQS hit count |
 | --- | --- | ---: | ---: | ---: | ---: |
-| LSTM | sample | `0.0082` | `0.2668` | `1.4452` | `22.7240` |
-| DFM small | vectorfield addition, scale 1 | `0.0060` | `0.1003` | `1.2583` | `8.0308` |
+| DFM | `vectorfield_addition` | `1.0` | `0.1443` | `90.9160` | `4.9113` |
+| DFM large | `score_free` | `1.0` | `0.1354` | `90.9700` | `4.9453` |
+
+Main result: DFM large gives the strongest overall distributional match, DFM is close with fewer parameters, LSTM is a strong autoregressive baseline, and VAE is noticeably weaker for this discrete G4 generation task.
 
 ## Code Style
 
